@@ -1,0 +1,119 @@
+#Include 'TOTVS.ch'
+#Include 'Protheus.ch'
+#Include 'TopConn.ch'
+#Include 'tlpp-core.th'
+#Include 'tlpp-rest.th'
+
+#Define cTitApp "Verifica ID de Integracoes"
+#Define Enter Chr(13) + Chr(10)
+
+
+/*/{Protheus.doc} ChkIDInt
+Função para checar de o ID existe ou nao na base 
+@type function
+@version V 1.00
+@author Edson Hornberger
+@since 09/08/2024
+@param cTabela, character, Tabela a ser analisada
+@param cID, character, ID passado no JSON
+@param cMsgErr, character, Mensagem de Erro
+@return logical, Verdadeiro se existe o ID
+/*/
+User Function ChkIDInt(cTabela as Character, cID as Character, cMsgErr as Character, aDados as Array) as Logical 
+
+Local lRet      := .T.                as Logical
+Local oError    := ErrorClass():New() as Object
+Local cQuery    := ""                 as Character
+Local cAliasTmp := GetNextAlias()     as Character
+Local cTabRed   := ""                 as Character
+
+Default cMsgErr := ""
+Default aDados  := {}
+
+TRY 
+
+    If Len(cTabela) > 3 
+
+        lRet := .F. 
+        cMsgErr += "Tabela informada deve ter apenas 3 caracteres."
+        Return lRet
+
+    EndIf
+    
+    If Left(cTabela, 1) = "S"
+
+        cTabRed := SubStr(cTabela, 2, 2)
+
+    Else 
+
+        cTabRed := SubStr(cTabela, 1,3)
+
+    EndIf
+    
+    Iif(Select(cAliasTmp) != 0, (cAliasTmp)->(dbCloseArea()), Nil)
+
+    If Len(aDados) <= 0 .Or. (Len(aDados) > 0 .And. Upper(AllTrim(aDados[2])) != "CNC" .And. Left(cTabela, 2) != "SE")
+    
+        cQuery := "SELECT"                                                      + Enter 
+        cQuery += " COUNT(*) AS NREG"                                           + Enter 
+        cQuery += "FROM"                                                        + Enter 
+        cQuery += " " + RetSQLName(cTabela) + " " + cTabela                     + Enter 
+        cQuery += "WHERE"                                                       + Enter 
+        cQuery += " " + cTabRed + "_FILIAL = '" + xFilial(cTabela) + "' AND"    + Enter 
+        cQuery += " " + cTabRed + "_XIDINT = '" + cID + "' AND"                 + Enter
+        cQuery += " " + cTabela + ".D_E_L_E_T_ = ' '"
+        If cTabela == "SD3"
+            cQuery += " AND D3_ESTORNO <> 'S' "     // Tratamento para SD3 na Inclusão
+        Endif 
+
+    ElseIf Len(aDados) > 0 
+
+        cQuery := "SELECT"                                                      + Enter 
+        cQuery += " COUNT(*) AS NREG"                                           + Enter 
+        cQuery += "FROM"                                                        + Enter 
+        cQuery += " " + RetSQLName(cTabela) + " " + cTabela                     + Enter 
+        cQuery += "WHERE"                                                       + Enter 
+        cQuery += " " + cTabRed + "_FILIAL = '" + xFilial(cTabela) + "' AND"    + Enter 
+        cQuery += " " + cTabRed + "_XIDINT = '" + aDados[01] + "' AND"          + Enter
+        If Left(cTabela, 2) = "SE"
+            cQuery += " " + cTabRed + "_PREFIXO = '" + aDados[02] + "' AND"         + Enter
+        EndIf
+        If cTabela = "SE1" .And. Upper(AllTrim(aDados[2])) = "CNC"
+            cQuery += " " + cTabRed + "_CLIENTE = '" + aDados[03] + "' AND"         + Enter
+            cQuery += " " + cTabRed + "_LOJA = '" + aDados[04] + "' AND"            + Enter
+        ElseIf cTabela = "SE2" .And. Upper(AllTrim(aDados[2])) = "CNC"
+            cQuery += " " + cTabRed + "_FORNECE = '" + aDados[03] + "' AND"         + Enter
+            cQuery += " " + cTabRed + "_LOJA = '" + aDados[04] + "' AND"            + Enter
+        EndIf
+        cQuery += " " + cTabela + ".D_E_L_E_T_ = ' '"
+
+    EndIf
+
+    cQuery := ChangeQuery(cQuery)
+
+    TcQuery cQuery New Alias (cAliasTmp)
+    dbSelectArea(cAliasTmp)
+    (cAliasTmp)->(dbGoTop())
+
+    If (cAliasTmp)->NREG > 0 
+
+        lRet := .T. 
+        //cMsgErr += "ID já existe no Protheus. ID: " + Iif(Len(aDados) > 0, aDados[01], cID)
+
+    Else 
+
+        lRet := .F. 
+        //cMsgErr += "ID não existe no Protheus. ID: " + Iif(Len(aDados) > 0, aDados[01], cID)
+
+    EndIf
+
+    Iif(Select(cAliasTmp) != 0, (cAliasTmp)->(dbCloseArea()), Nil)
+
+CATCH oError
+
+    cMsgErr += "ChkIDInt - Erro DEV: " + oError:Description 
+    lRet    := .F. 
+
+ENDTRY
+
+Return lRet

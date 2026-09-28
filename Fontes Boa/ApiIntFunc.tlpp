@@ -1,0 +1,1520 @@
+#Include "TOTVS.ch"
+#Include "TopConn.ch"
+#Include "TBIConn.ch"
+#Include "Protheus.ch"
+//#Include "tlpp-core.th"
+#Include "tlpp-rest.th"
+
+#Define cTitApp "API Funcionários"
+#Define Enter Chr(13) + Chr(10)
+
+/*/{Protheus.doc} InsProd
+Funcao de API no método POST de Inclusão de Funcionários
+@type function
+@version V 1.00
+@author Carla Barbosa
+@since 22.09.2025
+@return logical, Sempre Verdadeiro
+/*/
+@Post("/Toch/Admissao/InsFunc")
+User Function InsFunc() as Logical
+	Local oError   := ErrorClass():New() as Object
+	Local oBody    := Nil                as Json
+	Local oResult  := Nil                as Json
+	Local oAux     := Nil                as Json
+	Local oLog     := Nil                as Object
+	Local jAuxLog  := Nil                as Json
+	Local aFuncion := {}                 as Array
+	Local oVldSch  := Nil                as Object
+	Local cPathSch := ""                 as Character
+    Local lCtrlLog := .f.                as logical
+	Local xx       := 1                  as Numeric
+	Local msgRetorno:= ""                as Character
+
+	Private cMsgErr  := ""                 as Character
+	Private cMsgRet  := ""                 as Character
+	Private cMsgOk   := ""                 as Character
+
+	TRY
+
+		// Define o formato de retorno do Response para o oRest
+		oAux := JsonObject():New()
+		oAux:FromJson('{"Content-Type":"application/json"}')
+		oRest:setHeaderResponse(oAux)
+		FreeObj(oAux)
+
+		// Coleta dados do Body da Requisicao
+		oBody := JsonObject():New()
+		oBody:FromJson(oRest:GetBodyRequest())
+
+		// Pega CNPJ para preparar o Ambiente
+		If oBody:HasProperty("cnpj")
+
+			// Prepara o Ambiente conforme o CNPJ informado
+			cCNPJ := oBody["cnpj"]
+			If !U_PrepEnvironment(cCNPJ)
+
+				cMsgRet := '{"erros": ["Erro ao preparar o ambiente com o CNPJ informado"]}'
+				oRest:SetStatusCode(602)
+				oRest:SetResponse(AnswerFormat(602, "Erro ao preparar ambiente1", cMsgRet))
+				Return .T.
+
+			Else
+
+                /*=====================================================================================================================================*/
+                // Controle de Licenciamento EZ4
+                /*=====================================================================================================================================*/
+                If !SuperGetMV("EZ_DEMO",.F.,.F.)   
+                    If !EZSERVER(SM0->M0_CGC, "010010001",@msgRetorno)    // CNPJ + PRODUTO 
+                        oRest:SetStatusCode(502)
+                        oRest:SetResponse(U_AnswerFormat(502, "Erro Licenciamento", msgRetorno))
+                        Return .T.
+                    Endif 
+                Endif 
+
+				cPathSch := SuperGetMV("MV_SCHEMA", .F., "\schemaint")
+                lCtrlLog := SuperGetMV("MV_CTRLLOG", .F., .F.)
+
+                If lCtrlLog
+                    // Habilita o LOG de Integracoes
+                    oLog    := CtrlLOG():New()
+                    jAuxLog := JsonObject():New()
+                    If !oLog:SetTab("SZL")
+
+                        U_AdminMsg("[InsFunc] " + DToC(Date()) + " - " + Time() + " -> " + oLog:GetError())
+                        oRest:SetStatusCode(501)
+                        cMsgRet := '{"erros": ["' + oLog:GetError() + '"]}'
+                        oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+                        Return .T.
+
+                    EndIf
+                Endif               
+
+				// Realiza a validacao do JSON enviado com Schema
+				If File(cPathSch + "\Insfunc.json")
+
+					oVldSch := VldSchJSON():New()
+					If oVldSch:SetFileSch(cPathSch + "\Insfunc.json", @cMsgErr)
+
+						If !oVldSch:ValidJSON(oBody, @cMsgErr)
+
+							cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+							oRest:SetStatusCode(502)
+							oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+							LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+							Return .T.
+
+						EndIf
+
+					Else
+
+						cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+						oRest:SetStatusCode(502)
+						oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+						LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+                        Return .T.
+
+					EndIf
+
+				EndIf
+
+				// Verifica se o ID Informado já existe no Protheus
+				For xx:= 1 to len(oBody["funcionarios"])
+					If U_ChkIDInt("SRA", Alltrim(oBody["funcionarios"][xx]:GetJSonObject("RA_XIDINT")) , @cMsgErr)
+
+						cMsgRet := '{"erros": [{"idint": "' + Alltrim(oBody["funcionarios"][xx]:GetJSonObject("RA_XIDINT")) + '", "error": "Chave xidint ja existe cadastrado no Protheus."}]}'
+						oRest:SetStatusCode(607)
+						oRest:SetResponse(AnswerFormat(607, "Chave IDint duplicada", cMsgRet))
+						LogErrorAPI(oRest, oBody, 502, "Chave IDint duplicada", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+						Return .T.
+
+					EndIf
+				Next xx
+		
+
+				If FillArrayFunc(oBody, 3, @aFuncion, lCtrlLog)
+
+					If Len(aFuncion) > 0
+
+						If !Empty(cMsgErr)
+							cMsgRet += '{"erros": [' + cMsgErr + ']
+							cMsgRet := Iif(Right(cMsgRet, 1) = "}", cMsgRet, cMsgRet += "}")
+							oRest:SetStatusCode(606)
+							oRest:SetResponse(AnswerFormat(606, "Funcionário com erro no Processamento", cMsgRet))
+							ConOut("/Toch/Admissao/InsFunc -> ERRO: " + cMsgRet)
+  							//LogErrorAPI(oRest, oBody, 606, "Funcionário com erro no Processamento", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+						EndIf
+
+						If !Empty(cMsgOk)
+							cMsgRet +=  '{"ok": [' + cMsgOk + ']
+							cMsgRet := Iif(Right(cMsgRet, 1) = "}", cMsgRet, cMsgRet += "}")
+							oRest:SetStatusCode(201)
+							oRest:SetResponse(AnswerFormat(201, ":Funcionario Processado",cMsgRet))
+  							//LogErrorAPI(oRest, oBody, 201, ":Funcionario Processado", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "1", "sucess", SRA->(recno()))			
+						EndIf
+					Else
+						cMsgRet := '{"erros": ["Array do Funcionario sem dados"]}'
+						oRest:SetStatusCode(603)
+						oRest:SetResponse(AnswerFormat(603, "Erro nos dados do array para Funcionario", cMsgRet))
+						LogErrorAPI(oRest, oBody, 603, "Erro nos dados do array para Funcionario", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)			
+
+ 					EndIf
+
+				Else
+
+					cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+					oRest:SetStatusCode(604)
+					oRest:SetResponse(AnswerFormat(604, "Erro ao gerar array do Funcionario", cMsgRet))
+					LogErrorAPI(oRest, oBody, 604, "Erro ao gerar array do Funcionario", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)			
+
+				EndIf
+
+			EndIf
+
+		Else
+
+			cMsgRet := '{"erros": ["Nao foi informada a chave cnpj"]}'
+			oRest:SetStatusCode(601)
+			oRest:SetResponse(AnswerFormat(601, "Faltando chave cnpj", cMsgRet))
+			Return .T.
+
+		EndIf
+
+		if lCtrlLog
+			If jAuxLog:HasProperty("status")
+
+				If !oLog:AddItem(jAuxLog)
+					U_AdminMsg("[InsFunc] " + DToC(Date()) + " - " + Time() + " -> " + oLog:GetError(), IsBlind())
+				EndIf
+
+			EndIf
+		Endif
+
+	CATCH oError
+
+		U_AdminMsg("[InsFunc] " + DtoC(Date()) + " - " + Time() + " -> " + oError:Description, IsBlind(), oError)
+		cMsgRet := '{"erros": ["' + oError:Description + '"]}'
+		oRest:SetStatusCode(501)
+		oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+		FreeObj(oBody)
+		FreeObj(oResult)
+
+	ENDTRY
+
+Return .T.
+
+
+/*/{Protheus.doc} AltFunc
+Funcao de API no método Put de alteracao de Funcionario
+@type function
+@version V 1.00
+@author Carla Barbosa
+@since 26/09/2025
+@return logical, Sempre Verdadeiro
+/*/
+@Put("/Toch/Admissao/AltFunc")
+User Function AltFunc() as Logical
+	Local oError   := ErrorClass():New() as Object
+	Local oBody    := Nil                as Json
+	Local oResult  := Nil                as Json
+	Local oAux     := Nil                as Json
+	Local oLog     := Nil                as Object
+	Local jAuxLog  := Nil                as Json
+	Local aFuncion := {}                 as Array
+    Local lCtrlLog := .f.                as Logical
+	Local oVldSch  := Nil                as Object
+	Local cPathSch := ""                 as Character
+	Private cMsgErr  := ""                 as Character
+	Private cMsgRet  := ""                 as Character
+	Private cMsgOk   := ""                 as Character
+	Private cFuncionario := ""                 as Character
+
+
+	TRY
+
+		// Define o formato de retorno do Response para o oRest
+		oAux := JsonObject():New()
+		oAux:FromJson('{"Content-Type":"application/json"}')
+		oRest:setHeaderResponse(oAux)
+		FreeObj(oAux)
+
+		// Coleta dados do Body da RequisiÃ§Ã£o
+		oBody := JsonObject():New()
+		oBody:FromJson(oRest:GetBodyRequest())
+
+		// Pega CNPJ para preparar o Ambiente
+		If oBody:HasProperty("cnpj")
+
+			// Prepara o Ambiente conforme o CNPJ informado
+			cCNPJ := oBody["cnpj"]
+			If !U_PrepEnvironment(cCNPJ)
+
+				cMsgRet := '{"erros": ["Erro ao preparar o ambiente com o CNPJ informado"]}'
+				oRest:SetStatusCode(602)
+				oRest:SetResponse(AnswerFormat(602, "Erro ao preparar ambiente2", cMsgRet))
+				Return .T.
+
+			Else
+
+				cPathSch := SuperGetMV("MV_SCHEMA", .F., "\schemaint")
+                lCtrlLog := SuperGetMV("MV_CTRLLOG", .F., .F.)
+
+                If lCtrlLog
+					// Habilita o LOG de Integracoes
+				    oLog    := CtrlLOG():New()
+				    jAuxLog := JsonObject():New()
+				    If !oLog:SetTab("SZL")
+					    U_AdminMsg("[AltFunc] " + DToC(Date()) + " - " + Time() + " -> " + oLog:GetError())
+					    oRest:SetStatusCode(501)
+					    cMsgRet := '{"erros": ["' + oLog:GetError() + '"]}'
+					    oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+					    Return .T.
+                    Endif
+	            Endif
+
+				// Realiza a validacao do JSON enviado com Schema
+				If File(cPathSch + "\altFunc.json")
+
+					oVldSch := VldSchJSON():New()
+					If oVldSch:SetFileSch(cPathSch + "\altFunc.json", @cMsgErr)
+
+						If !oVldSch:ValidJSON(oBody, @cMsgErr)
+							cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+							oRest:SetStatusCode(502)
+							oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+							LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "PUT_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+ 						    Return .T.
+
+						EndIf
+
+					Else
+
+						cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+						oRest:SetStatusCode(502)
+						oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+						LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "PUT_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+						Return .T.
+
+					EndIf
+
+				EndIf
+
+				If FillArrayFunc(oBody, 4, @aFuncion, lCtrlLog)
+
+					If Len(aFuncion) > 0
+
+						If !Empty(cMsgErr)
+
+							cMsgRet += '{"erros": [' + cMsgErr + ']
+							cMsgRet := Iif(Right(cMsgRet, 1) = "}", cMsgRet, cMsgRet += "}")
+							oRest:SetStatusCode(606)
+							oRest:SetResponse(AnswerFormat(606, "Funcionario com erro no Processamento", cMsgRet))
+
+						EndIf
+						If !Empty(cMsgOk)
+
+							cMsgRet +=  '{"ok": [' + cMsgOk + ']
+							cMsgRet := Iif(Right(cMsgRet, 1) = "}", cMsgRet, cMsgRet += "}")
+							oRest:SetStatusCode(201)
+							oRest:SetResponse(AnswerFormat(201, ":Funcionario Processado",cMsgRet))
+
+						EndIf
+
+
+					Else
+
+						cMsgRet := '{"erros": ["Array do Funcionario sem dados"]}'
+						oRest:SetStatusCode(603)
+						oRest:SetResponse(AnswerFormat(603, "Erro nos dados do array para Funcionario", cMsgRet))
+						LogErrorAPI(oRest, oBody, 603, "Validacao de Schema", cMsgRet, "PUT_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+						
+					EndIf
+
+				Else
+
+					cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+					oRest:SetStatusCode(604)
+					oRest:SetResponse(AnswerFormat(604, "Erro ao gerar array do Funcionario", cMsgRet))
+					LogErrorAPI(oRest, oBody, 604, "Erro ao gerar array do Funcionario", cMsgRet, "PUT_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+					
+				EndIf
+
+			EndIf
+
+		Else
+
+			cMsgRet := '{"erros": ["Nao foi informada a chave cnpj"]}'
+			oRest:SetStatusCode(601)
+			oRest:SetResponse(AnswerFormat(601, "Faltando chave cnpj", cMsgRet))
+			Return .T.
+
+		EndIf
+
+	CATCH oError
+
+		U_AdminMsg("[InsFunc] " + DtoC(Date()) + " - " + Time() + " -> " + oError:Description, IsBlind(), oError)
+		cMsgRet := '{"erros": ["' + oError:Description + '"]}'
+		oRest:SetStatusCode(501)
+		oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+		FreeObj(oBody)
+		FreeObj(oResult)
+
+	ENDTRY
+
+Return .T.
+
+
+
+/*/{Protheus.doc} DelFunc
+Funcao de API no método delete de Funcionários
+@type function
+@version V 1.00
+@author Carla Barbosa
+@since 26/09/2025
+@return logical, Sempre Verdadeiro
+/*/
+@delete("/Toch/Admissao/DelFunc")
+ User Function DelFunc() as Logical
+	Local oError   := ErrorClass():New() as Object
+	Local oBody    := Nil                as Json
+	Local oResult  := Nil                as Json
+	Local oAux     := Nil                as Json
+	Local oLog     := Nil                as Object
+	Local jAuxLog  := Nil                as Json
+	Local aFuncion := {}                 as Array
+	Local oVldSch  := Nil                as Object
+	Local cPathSch := ""                 as Character
+	Local xx       := 1                  as Numeric
+
+	Private cMsgErr  := ""                 as Character
+	Private cMsgRet  := ""                 as Character
+	Private cMsgOk   := ""                 as Character
+	Private cProduto := ""                 as Character
+
+	
+	TRY
+
+		// Define o formato de retorno do Response para o oRest//
+		oAux := JsonObject():New()
+		oAux:FromJson('{"Content-Type":"application/json"}')
+		oRest:setHeaderResponse(oAux)
+		FreeObj(oAux)
+
+		// Coleta dados do Body da Requisicao
+		oBody := JsonObject():New()
+		oBody:FromJson(oRest:GetBodyRequest())
+
+		// Pega CNPJ para preparar o Ambiente
+		If oBody:HasProperty("cnpj")
+
+			// Prepara o Ambiente conforme o CNPJ informado
+			cCNPJ := oBody["cnpj"]
+			If !U_PrepEnvironment(cCNPJ)
+
+				cMsgRet := '{"erros": ["Erro ao preparar o ambiente com o CNPJ informado"]}'
+				oRest:SetStatusCode(602)
+				oRest:SetResponse(AnswerFormat(602, "Erro ao preparar ambiente3", cMsgRet))
+				Return .T.
+
+			Else
+
+				dbSelectArea("SRA")
+				SRA->(dbSetOrder(1))
+				
+				cPathSch := SuperGetMV("MV_SCHEMA", .F., "\schemaint")
+                lCtrlLog := SuperGetMV("MV_CTRLLOG", .F., .F.)
+
+				// Habilita o LOG de Integracoes
+				If lCtrlLog
+					oLog    := CtrlLOG():New()
+					jAuxLog := JsonObject():New()
+					If !oLog:SetTab("SZL")
+
+						U_AdminMsg("[InsFunc] " + DToC(Date()) + " - " + Time() + " -> " + oLog:GetError())
+						oRest:SetStatusCode(501)
+						cMsgRet := '{"erros": ["' + oLog:GetError() + '"]}'
+						oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+						Return .T.
+
+					EndIf
+				Endif
+
+				// Realiza a validacao do JSON enviado com Schema
+				If File(cPathSch + "\excfunc.json")
+
+					oVldSch := VldSchJSON():New()
+					If oVldSch:SetFileSch(cPathSch + "\excfunc.json", @cMsgErr)
+
+						If !oVldSch:ValidJSON(oBody, @cMsgErr)
+
+							cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+							oRest:SetStatusCode(502)
+							oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+						    LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+							Return .T.
+
+						EndIf
+
+					Else
+
+						cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+						oRest:SetStatusCode(502)
+						oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+						LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+						Return .T.
+
+					EndIf
+
+				EndIf
+
+				// Verifica se o ID Informado já existe no Protheus
+				For xx:= 1 to len(oBody["funcionarios"])
+					
+					//Verifica se o produto existe
+					SRA->(dbSetOrder(1))
+					SRA->(dbgotop())
+					If !SRA->(dbSeek(xFilial("SRA")+Alltrim(oBody["funcionarios"][xx]:GetJSonObject("RA_MAT"))))
+
+						cMsgRet := '{"erros": [{"idint": "' + Alltrim(oBody["funcionarios"][xx]:GetJSonObject("RA_MAT")) + '", "error": "Funcionario não encontrado no Protheus."}]}'
+						oRest:SetStatusCode(607)
+						oRest:SetResponse(AnswerFormat(607, "Funcionario não encontrado", cMsgRet))
+						LogErrorAPI(oRest, oBody, 607, "Funcionario nao Encontrado", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+						Return .T.
+					EndIf
+
+					If !U_ChkIDInt("SRA", Alltrim(oBody["funcionarios"][xx]:GetJSonObject("RA_XIDINT")) , @cMsgErr)
+						ConOut("/Toch/Admissao/DelFunc - Chave xidint nao localizada no Protheus.")
+						cMsgRet := '{"erros": [{"idint": "' + Alltrim(oBody["funcionarios"][xx]:GetJSonObject("RA_XIDINT")) + '", "error": "Chave xidint nao localizada no Protheus."}]}'
+						oRest:SetStatusCode(404)
+						oRest:SetResponse(AnswerFormat(404, "Chave IDint nao localizada", cMsgRet))
+						LogErrorAPI(oRest, oBody, 404, "Chave IDint nao localizada", cMsgRet, "DELETE_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+  						Return .T.
+
+					EndIf
+				Next xx
+
+				If FillArrayFunc(oBody, 5, @aFuncion,lCtrlLog)
+
+					If Len(aFuncion) > 0
+
+						If !Empty(cMsgErr)
+
+							cMsgRet += '{"erros": [' + cMsgErr + ']
+							cMsgRet := Iif(Right(cMsgRet, 1) = "}", cMsgRet, cMsgRet += "}")
+							oRest:SetStatusCode(606)
+							oRest:SetResponse(AnswerFormat(606, "Produto com erro no Processamento", cMsgRet))
+
+						EndIf
+						If !Empty(cMsgOk)
+
+							cMsgRet +=  '{"ok": [' + cMsgOk + ']
+							cMsgRet := Iif(Right(cMsgRet, 1) = "}", cMsgRet, cMsgRet += "}")
+							oRest:SetStatusCode(201)
+							oRest:SetResponse(AnswerFormat(201, ":Produto Processado",cMsgRet))
+
+						EndIf
+
+					Else
+
+						cMsgRet := '{"erros": ["Array do Funcionario sem dados"]}'
+						oRest:SetStatusCode(603)
+						oRest:SetResponse(AnswerFormat(603, "Erro nos dados do array para Funcionario", cMsgRet))
+						LogErrorAPI(oRest, oBody, 603, "Erro nos dados do array para Funcionario", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+					EndIf
+
+				Else
+
+					cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+					oRest:SetStatusCode(604)
+					oRest:SetResponse(AnswerFormat(604, "Erro ao gerar array do Produto", cMsgRet))
+					LogErrorAPI(oRest, oBody, 604, "Erro nos dados do array para Funcionario", cMsgRet, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+				EndIf
+
+			EndIf
+
+		Else
+
+			cMsgRet := '{"erros": ["Nao foi informada a chave cnpj"]}'
+			oRest:SetStatusCode(601)
+			oRest:SetResponse(AnswerFormat(601, "Faltando chave cnpj", cMsgRet))
+			Return .T.
+
+		EndIf
+
+		if lCtrlLog
+			If jAuxLog:HasProperty("status")
+				If !oLog:AddItem(jAuxLog)
+					U_AdminMsg("[DelFunc] " + DToC(Date()) + " - " + Time() + " -> " + oLog:GetError(), IsBlind())
+				EndIf
+			EndIf
+		EndIf
+		
+	CATCH oError
+
+		U_AdminMsg("[InsFunc] " + DtoC(Date()) + " - " + Time() + " -> " + oError:Description, IsBlind(), oError)
+		cMsgRet := '{"erros": ["' + oError:Description + '"]}'
+		oRest:SetStatusCode(501)
+		oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+		FreeObj(oBody)
+		FreeObj(oResult)
+
+	ENDTRY
+
+Return .T.
+
+
+/*/{Protheus.doc} VisFunc
+FunÁ„o de API no mÈtodo GET de Visualizacao de Funcionários
+@type function
+@version V 1.00
+@author Carla Barbosa
+@since 26/09/2025
+@return logical, Sempre Verdadeiro
+/*/
+@Get("/Toch/Admissao/VisFunc")
+User Function VisFunc() as Logical
+
+	Local oError   := ErrorClass():New() as Object
+	Local oBody    := Nil                as Json
+	Local oResult  := Nil                as Json
+	Local jCampos  := Nil                as Json
+	Local oLog     := Nil                as Object
+	Local jAuxLog  := Nil                as Json
+	Local aCampos  := {}                 as Array
+	Local cMsgErr  := ""                 as Character
+	Local cMsgRet  := ""                 as Character
+	Local nI       := 0                  as Numeric
+	Local nn       := 0                  as Numeric
+	Local oVldSch  := Nil                as Object
+	Local cPathSch := ""                 as Character
+	Local cFunc    := ""                 as Character
+	Local cIdInt   := ""                 as Character
+
+	TRY
+
+		// Define o formato de retorno do Response para o oRest
+		oAux := JsonObject():New()
+		oAux:FromJson('{"Content-Type":"application/json"}')
+		oRest:setHeaderResponse(oAux)
+		FreeObj(oAux)
+
+		// Coleta dados do Body da Requisi?ß?£o
+		oBody := JsonObject():New()
+		oBody:FromJson(oRest:GetBodyRequest())
+
+		// Pega CNPJ para preparar o Ambiente
+		If oBody:HasProperty("cnpj")
+
+			// Prepara o Ambiente conforme o CNPJ informado
+			cCNPJ := oBody["cnpj"]
+			If !U_PrepEnvironment(cCNPJ)
+
+				cMsgRet := '{"erros": ["Erro ao preparar o ambiente com o CNPJ informado"]}'
+				oRest:SetStatusCode(602)
+				oRest:SetResponse(AnswerFormat(602, "Erro ao preparar ambiente4", cMsgRet))
+				Return .T.
+
+			Else
+
+				cPathSch := SuperGetMV("UB_SCHEMA", .F., "\schemaint")
+				lCtrlLog := SuperGetMV("MV_CTRLLOG", .F., .F.)
+
+				if lCtrlLog
+					oLog := CtrlLOG():New()
+					jAuxLog := JsonObject():New()
+					If !oLog:SetTab("SZL")
+
+						U_AdminMsg("[VisFor] " + DToC(Date()) + " - " + Time() + " -> " + oLog:GetError())
+						oRest:SetStatusCode(501)
+						cMsgRet := '{"erros": ["' + oLog:GetError() + '"]}'
+						oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+						Return .T.
+
+					EndIf
+				Endif
+
+				// Realiza a validaÁ„o do JSON enviado com Schema
+				If File(cPathSch + "\vispro.json")
+
+					oVldSch := VldSchJSON():New()
+					If oVldSch:SetFileSch(cPathSch + "\vispro.json", @cMsgErr)
+
+						If !oVldSch:ValidJSON(oBody, @cMsgErr)
+
+							cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+							oRest:SetStatusCode(502)
+							oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+							LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "GET_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+ 							Return .T.
+
+						EndIf
+
+					Else
+
+						cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+						oRest:SetStatusCode(502)
+						oRest:SetResponse(AnswerFormat(502, "Validacao de Schema", cMsgRet))
+						LogErrorAPI(oRest, oBody, 502, "Validacao de Schema", cMsgRet, "GET_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+						Return .T.
+
+					EndIf
+
+				EndIf
+
+				// Inicia o processo
+				For nn:=1 to len(oBody["funcionarios"])
+					If oBody["funcionarios"][nn]:HasProperty("campos")
+
+						jCampos := JsonObject():New()
+						jCampos := oBody["funcionarios"][nn]["campos"]
+						If Len(jCampos) > 0
+
+							For nI := 1 To Len(jCampos)
+
+								aAdd(aCampos, jCampos[nI])
+
+							Next nI
+
+						Else
+
+							cMsgRet := '{"erros": ["Nao foram passado os itens da chave campos"]}'
+							oRest:SetStatusCode(607)
+							oRest:SetResponse(AnswerFormat(607, "Erro na chave campos", cMsgRet))
+						    LogErrorAPI(oRest, oBody, 607, "Erro na chave campos", cMsgRet, "GET_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+						endif
+						If  oBody["funcionarios"][nn]:HasProperty("RA_CIC")
+
+								oResult := JsonObject():New()
+
+								cFUNC 	 := Alltrim(oBody["funcionarios"][nn]:GetJSonObject("RA_MAT"))
+								cIdInt   := Alltrim(oBody["funcionarios"][nn]:GetJSonObject("RA_XIDINT"))
+								cCODCGC  :=  Alltrim(oBody["funcionarios"][nn]:GetJSonObject("RA_CIC"))
+								cRA      :=  Alltrim(oBody["funcionarios"][nn]:GetJSonObject("RA_MAT"))
+								If xQrySRA(cRA, aCampos, @oResult, @cMsgErr)
+
+									oRest:SetStatusCode(201)
+									oRest:SetResponse(oResult)
+						   		    //LogErrorAPI(oRest, jBody, 201, "Erro na chave campos", cMsgRet, "GET_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "1", "success", 0)
+					 			
+								Else
+
+									cMsgRet := '{"erros": ["' + cMsgErr + '"]}'
+									oRest:SetStatusCode(609)
+									oRest:SetResponse(AnswerFormat(609, "Erro no verbo GET", cMsgRet))
+					  		    	LogErrorAPI(oRest, oBody, 609, "Erro no verbo GET", cMsgRet, "GET_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+		
+								EndIf
+
+						Else
+
+							cMsgRet := '{"erros": ["Nao foi passado a chave RA_CIC"]}'
+							oRest:SetStatusCode(606)
+							oRest:SetResponse(AnswerFormat(606, "Falta chave RA_CIC", cMsgRet))
+				  		   	LogErrorAPI(oRest, oBody, 606, "Falta chave RA_CIC", cMsgRet, "GET_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+						EndIf
+
+					Else
+
+						cMsgRet := '{"erros": ["Nao foi passado a chave campos"]}'
+						oRest:SetStatusCode(608)
+						oRest:SetResponse(AnswerFormat(608, "Falta chave campos", cMsgRet))
+			  		    LogErrorAPI(oRest, oBody, 606, "Falta chave B1_COD", cMsgRet, "GET_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+
+
+					EndIf
+				Next nn
+
+			EndIf
+
+		Else
+
+			cMsgRet := '{"erros": ["Nao foi informada a chave cnpj"]}'
+			oRest:SetStatusCode(601)
+			oRest:SetResponse(AnswerFormat(601, "Faltando chave cnpj", cMsgRet))
+
+		EndIf
+
+
+	CATCH oError
+
+		U_AdminMsg("[Visprod] " + DtoC(Date()) + " - " + Time() + " -> " + oError:Description, IsBlind(), oError)
+		cMsgRet := '{"erros": ["' + oError:Description + '"]}'
+		oRest:SetStatusCode(501)
+		oRest:SetResponse(AnswerFormat(501, "Erro DEV", cMsgRet))
+		FreeObj(oBody)
+		FreeObj(oResult)
+
+	ENDTRY
+
+Return .T.
+
+
+/*/{Protheus.doc} FillArrayFunc
+Funcao que monta o Array com Funcionario
+@type function
+@version V 1.00
+@author Carla Barbosa
+@since 22/09/2025
+@param oBody, json, Json com dados
+@param nOpc, numeric, Opcao para montagem 
+@param aProduto, array, Array com os dados para ExecAuto
+@param cMsgErr, character, Mensagem de Erro
+@return logical, Verdadeiro se montou array corretamente
+/*/
+Static Function FillArrayFunc(oBody as Json, nOpc as  Numeric, aFuncion as Array, lCtrlLog as logical) as Logical
+
+	Local lRet      := .T.                as Logical
+	Local oError    := ErrorClass():New() as Object
+	Local nI        := 0                  as Numeric
+	Local xConteudo := Nil                as Variant
+	Local aWhen     := {}                 as Array
+	Local cExeWhen  := ""                 as Character
+	Local nPosWhen  := 0                  as Numeric
+	Local aArea     := FwGetArea()        as Array
+	Local aAreaSX3  := SX3->(FwGetArea()) as Array
+	Local nc        := 1                  as Numeric
+	Local nw        := 1                  as Numeric
+	Local nb        := 1                  as Numeric
+	Local cCpf      := ""			      as Character
+
+//	TRY
+
+		For nw := 1 To Len(oBody:GetNames())
+
+			If oBody:GetNames()[nw] == "funcionarios"
+				//Adiciona idint no cadastro do funcionarios
+				For nb:=1 to len(oBody["funcionarios"])
+					aFuncion:={}
+
+					For nc:= 1 to  Len(oBody[oBody:GetNames()[nw]][nb]:GetNames())
+						lRet         := U_xValidDic("SRA",oBody[oBody:GetNames()[nw]][nb]:GetNames()[nc], cMsgErr)
+						xConteudo    := U_TreatsData(oBody["funcionarios"][nb]:GetNames()[nc],  Alltrim(oBody["funcionarios"][nb][oBody["funcionarios"][1]:GetNames()[nc]]), "R")
+						aAdd(aFuncion,{oBody["funcionarios"][nb]:GetNames()[nc], xConteudo, Nil})
+
+							//Adiciona o RA PRECISO DELE SEMPRE
+						If  oBody[oBody:GetNames()[nw]][1]:GetNames()[nc] == "RA_CIC"
+								cCPF := xConteudo
+						EndIf
+						dbSelectArea("SX3")
+						SX3->(dbSetOrder(2))
+						If SX3->(dbSeek(Upper(AllTrim(oBody["funcionarios"][nb]:GetNames()[nc]))))
+
+							If !Empty(AllTrim(SX3->X3_WHEN)) .And. "M->" $ SX3->X3_WHEN
+
+								aAdd(aWhen, {Upper(AllTrim(oBody["funcionarios"][nb]:GetNames()[nc])), AllTrim(SX3->X3_WHEN)})
+
+							EndIf
+
+						EndIf
+					Next nc
+
+					If Len(aFuncion)
+						If lRet
+
+							aFuncion := FWVetByDic(aFuncion, "SRA")
+
+							// Realiza tratativa para campos com When no SX3 preenchido
+							For nI := 1 To Len(aWhen)
+
+								If oBody:HasProperty(AllTrim(SubStr(awhen[nI][2], Iif(At("_", aWhen[nI][2]) <= 4, 1, At("_", aWhen[nI][2]) - 2), 10)))
+
+									cExeWhen := StrTran(aWhen[1][2], "M->" + AllTrim(SubStr(awhen[1][2], Iif(At("_", aWhen[1][2]) <= 4, 1, At("_", aWhen[1][2]) - 2), 10)), '"' + oBody[AllTrim(SubStr(awhen[1][2], Iif(At("_", aWhen[1][2]) <= 4, 1, At("_", aWhen[1][2]) - 2), 10))] + '"')
+									If !&(cExeWhen)
+
+										nPosWhen := aScan(aFuncion, {|x| Upper(AllTrim(x[1])) = aWhen[nI][1]})
+										If nPosWhen > 0
+
+											aDel(aFuncion, nPosWhen)
+											aSize(aFuncion, Len(aFuncion) - 1)
+
+										EndIf
+
+									EndIf
+
+								EndIf
+
+							Next nI
+
+						EndIf
+
+						U_xExecGPEA010(aFuncion, nOpc, oBody, lCtrlLog)
+						cMsgOk:= cMsgOk
+
+					EndIF
+				Next nb
+
+			Else
+
+				nPosCPF := nI
+
+			EndIf
+
+		Next nw
+/*
+	CATCH oError
+
+		cMsgErr += "Erro na funcao FillArrayFunc - " + oError:Description + Enter
+		lRet    := .F.
+
+	ENDTRY
+*/
+	FwRestArea(aAreaSX3)
+	FwRestArea(aArea)
+
+Return lRet
+
+
+/*/{Protheus.doc} xExecGPEA010
+Função que executa a Rotina GPEA010
+@type function
+@version V 1.00
+@author Carla Barbosa
+@since 22/09/2025
+@param aFuncion, array, Array com Dados
+@param nOpc, numeric, Opção para ExecAuto
+@param cMsgOk, character, Mensagem quando OK
+@param cMsgErr, character, Mensagem de Erro
+@return logical, Verdadeiro se executou corretamente
+/*/
+User Function xExecGPEA010(aFuncion as Array, nOpc as Numeric, jBody as Json, lCtrlLog) as Logical
+
+	Local lRet             := .T.                as Logical
+	Local oError           := ErrorClass():New() as Object
+	Local aErr             := {}                 as Array
+	Local oLog             := Nil                as Object
+	Local jAuxLog          := Nil                as Json
+	Local nPosIDInt        := 0                  as Numeric
+	Local nI               := 0                  as Numeric
+	Local lAchou           := .T.                as Logical
+	Local nX               := 0                  as Numeric
+	Local cArquivo         := "\spool\API_Toch_"+DTos(Date())+"_"+StrTran( Time(), ':', '' )+".log"
+
+	Private lMsErroAuto    := .F.                as Logical
+	Private lMsHelpAuto    := .F.                as Logical
+	Private lAutoErrNoFile := .T.                as Logical
+
+	Default jBody := JsonObject():New()
+
+	For nX := 1 to len(aFuncion)
+
+		If Valtype(aFuncion[nX,2]) == 'C'
+
+			cLog += "[aFunction posição"+Strzero(nX,3)+"] [Campo: "+aFuncion[nX,1]+" ][Conteudo: "+aFuncion[nX,2]+" ][Tipo: "+Valtype(aFuncion[nX,2])+"]" + CRLF
+		
+		ElseIf Valtype(aFuncion[nX,2]) == 'N'
+
+			cLog += "[aFunction posição"+Strzero(nX,3)+"] [Campo: "+aFuncion[nX,1]+" ][Conteudo: "+alltrim(str(aFuncion[nX,2]))+" ][Tipo: "+Valtype(aFuncion[nX,2])+"]" + CRLF
+
+		ElseIf Valtype(aFuncion[nX,2]) == 'D'
+
+			cLog += "[aFunction posição"+Strzero(nX,3)+"] [Campo: "+aFuncion[nX,1]+" ][Conteudo: "+dtos(aFuncion[nX,2])+" ][Tipo: "+Valtype(aFuncion[nX,2])+"]" + CRLF
+
+		Else
+
+			cLog += "[aFunction posição"+Strzero(nX,3)+"] [Campo: "+aFuncion[nX,1]+" ][Conteudo: Não sei ][Tipo: "+Valtype(aFuncion[nX,2])+"]" + CRLF
+
+		End
+
+	Next nX
+
+    MemoWrite(cArquivo, cLog)
+
+
+	TRY
+
+		If Len(aFuncion) > 0
+
+			Begin Transaction
+
+				if lCtrlLog
+					oLog := CtrlLOG():New()
+					jAuxLog := JsonObject():New()
+
+					If !oLog:SetTab("SZL")
+						U_AdminMsg("[xExecGPEA010] " + DToC(Date()) + " - " + Time() + " -> " + oLog:GetError())
+					EndIf
+				Endif
+
+                nPosCGC    := aScan(aFuncion, {|x| Upper(AllTrim(x[1])) = "RA_CIC"})
+				nPosIDInt  := aScan(aFuncion, {|x| Upper(AllTrim(x[1])) = "RA_XIDINT"})
+				nPosCodigo := aScan(aFuncion, {|x| AllTrim(x[1]) = "RA_MAT"})
+				cRA_MAT    := aFuncion[nPosCodigo][02]
+				cCodCGC    := aFuncion[nPosCGC][02]
+
+				If nOpc = 4 .Or. nOpc = 5
+					dbSelectArea("SRA")
+					SRA->(dbSetOrder(1))
+					If SRA->(dbSeek(xFilial('SRA') + cRA_MAT))    
+						cRA_MAT := SRA->RA_MAT				 
+						cIDInt  := SRA->RA_XIDINT
+						cCodCGC := SRA->RA_CIC
+					else
+						lAchou := .F.
+					EndIf
+
+				EndIf
+
+				If nOpc = 3
+
+                   nPosCGC    := aScan(aFuncion, {|x| Upper(AllTrim(x[1])) = "RA_CIC"})
+				   nPosCodigo := aScan(aFuncion, {|x| AllTrim(Upper(X[1])) = "RA_MAT"})
+
+				   cRA_MAT    := aFuncion[nPosCodigo][02]						
+                   cCodCGC    := aFuncion[nPosCGC][02]
+
+				EndIf
+				
+				If lAchou
+
+					if lCtrlLog
+						FreeObj(jAuxLog)
+						jAuxLog     := JsonObject():New()
+					Endif
+
+					aErr        := {}
+					lMsErroAuto := .F.
+					dbSelectArea("SRA")
+					SRA->(dbSetOrder(1))
+					SRA->(dbgotop())
+
+					SetFunName("GPEA010")
+
+					aFuncion := FWVetByDic(aFuncion, "SRA")
+
+					MSExecAuto({|x,y,k,w| GPEA010(x,y,k,w)},NIL,NIL,aFuncion,nOpc)  //-- Opcao 3 - Inclusao registro
+
+					If lMsErroAuto
+
+						lRet    := .F.
+						aErr    := GetAutoGRLog()
+						If !Empty(cMsgErr)
+							cMsgErr +=","
+						EndIf
+						cMsgErr += '{"idint": "' + AllTrim(aFuncion[nPosIDInt][2]) + '", "Codigo": "'+ cRA_MAT + '", "error": "'
+						cErrMsg := '{"idint": "' + AllTrim(aFuncion[nPosIDInt][2]) + '", "Codigo": "'+ cRA_MAT + '", "error": "'
+
+						For nI := 1 To Len(aErr)
+
+							cMsgErr += StrTran(aErr[nI], Enter, " ") + " "
+							cErrMsg += StrTran(aErr[nI], Enter, " ") + " "
+
+						Next nI
+						cMsgErr += '"}'
+						cErrMsg += '"}'
+
+						LogErrorAPI(oRest, jBody, 606, "Erro no MsExecAuto", cErrMsg, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "0", "error", 0)
+						
+						cMsgErr := Iif(Right(cMsgErr, 1) = ",", SubStr(cMsgErr, 1, Len(cMsgErr) - 1), cMsgErr)
+
+						DisarmTransaction()
+
+					Else
+
+						SRA->(dbSetOrder(1))
+						SRA->(dbGoTop())
+						SRA->(dbSeek(xFilial('SRA')+cRA_MAT))   /// AQUI 
+
+						If !Empty(cMsgOk)
+							cMsgOk+= ","
+						EndIf
+
+						cMsgOk += '{"idint": "' + SRA->RA_XIDINT + '", "RA_MAT": "' + SRA->RA_MAT + '","RA_CIC": "' + SRA->RA_CIC + '"}'
+
+						LogErrorAPI(oRest, jBody, 201, "Processo concluído", cMsgOk, "POST_INTFUNCIONARIO", "GPEA010", "SRA", oLog, lCtrlLog , "1", "success", SRA->(RecNo()))
+
+					EndIf
+				
+				EndIf
+
+			End Transaction
+		EndIF
+
+
+
+	CATCH oError
+
+		cMsgErr += oError:Description
+		lRet    := .F.
+
+	ENDTRY
+
+Return lRet
+
+
+/*/{Protheus.doc} AnswerFormat
+Funcao que monta a resposta de retorno do oRest
+@type function
+@version V 1.00
+@author Michel Sander
+@since 11/04/2025
+@param statusCode, numeric, Codigo de retorno
+@param message, character, Mensagem do retorno
+@param detailed, character, Detalhe do retorno 
+@return json, Json com resposta montada
+/*/
+Static Function AnswerFormat(statusCode As Numeric, message As Character, detailed As Character) as Json
+
+	Local oError := ErrorClass():New() as Object
+	Local jAux   := JsonObject():New() as JSON
+	Local jRet   := JsonObject():New() as JSON
+
+	TRY
+
+		jAux:FromJson(detailed)
+
+		jRet["result"]     := Iif(statusCode < 300, .T., .F.)
+		jRet["statusCode"] := statusCode
+		jRet["message"]    := message
+		jRet["response"]   := jAux
+
+	CATCH oError
+
+		U_AdminMsg("[AnswerFormat] " + DToC(Date()) + " - " + Time() + " -> " + oError:Description, IsBlind(), oError)
+
+	ENDTRY
+
+Return jRet
+
+
+/*/{Protheus.doc} xQrySRA
+FunÁ„o que realiza a Query e monta Json de Retorno
+@type function
+@version V 1.00
+@author Carla Barbosa
+@since 22.09.2025
+@param cRA, character, Matricula
+@param aCampos, array, Campos para montar a query
+@param oResult, json, Json com retorno da query
+@param cMsgErr, character, Mensagem de erro
+@return logical, Verdadeiro se executou corretamente
+/*/
+Static Function xQrySRA(cRa as Character, aCampos as Array, oResult as Json, cMsgErr as Character) as Logical
+
+	Local lRet      := .T.                as Logical
+	Local oError    := ErrorClass():New() as Object
+	Local cAliasTmp := GetNextAlias()     as Character
+	Local cCampos   := ""                 as Character
+	Local nI        := 0                  as Numeric
+	Local jTemp     := Nil                as Json
+	Local cQuery    := ""                 as Character
+	Local lDados    := .F.                as Logical
+	Local cMsgRetCon:= ""				  as character
+
+	TRY
+
+		// Monta o Select (Campos)
+		If Len(aCampos) > 0
+
+			For nI := 1 To Len(aCampos)
+
+				cCampos += "SRA." + aCampos[nI] + Iif(nI < Len(aCampos), ",", "")
+
+			Next nI
+
+		Else
+
+			lRet    := .F.
+			cMsgErr += "xQrySRA - Sem campos para retorno da Query"
+			 
+		EndIf
+
+		Iif(Select(cAliasTmp) != 0, (cAliasTmp)->(dbCloseArea()), Nil)
+
+		cQuery := "SELECT"                                                  + Enter
+		cQuery += cCampos                                                   + Enter
+		cQuery += "FROM"                                                    + Enter
+		cQuery += RetSQLName("SRA") + " SRA"                                + Enter
+		cQuery += "WHERE"                                                   + Enter
+		cQuery += "SRA.RA_FILIAL = '" + xFilial("SRA") + "' AND"            + Enter
+		cQuery += "SRA.RA_MAT = '" + cRA + "' AND"                      + Enter
+		cQuery += "SRA.D_E_L_E_T_ = ' '"
+
+		cQuery := ChangeQuery(cQuery)
+
+		TcQuery cQuery New Alias (cAliasTmp)
+
+		dbSelectArea(cAliasTmp)
+		dbGoTop()
+
+	    If (cAliasTmp)->(!EOF())
+
+			jTemp := JsonObject():New()
+			While (cAliasTmp)->(!EOF())
+
+				For nI := 1 To Len(aCampos)
+					jTemp[aCampos[nI]] := U_TreatsData(aCampos[nI], &("(cAliasTmp)->" + aCampos[nI]), "U")
+					lDados:=.T.
+				Next nI
+
+				(cAliasTmp)->(dbSkip())
+
+			EndDo
+
+		EndIf
+		If lDados
+			oResult["result"] := jTemp
+			cMsgRetCon += jTemp:ToJSON() 
+		else		  
+			oResult["result"] := " Funcionário Matricula :"+cRa+" não encontrado!"	
+			cMsgRetCon += "'"+cRa+'" não encontrado!"'+"}"                   
+		EndIf
+
+	CATCH oError
+
+		lRet    := .F.
+		cMsgErr += oError:Description
+
+	ENDTRY
+
+Return lRet
+
+//======================================================//
+// Função centralizada para criar e gravar logs de erro //
+//======================================================//
+Static Function LogErrorAPI(oRest As Object, oBody As Json, nStatusCode As Numeric, cMsg As Character, cMsgRet as character,  cApiName As Character, cRoutine As Character, cTable As Character, oLog As Object, lGravaSZL As Logical, cStatus as Character, cMsgResp as Character, nRecno as Numeric)
+
+    Local oLogObject     := JsonObject():New() As Json
+    Local oErrorResponse := JsonObject():New() As Json
+    Local oAux           := JsonObject():New() As Object
+    Default lGravaSZL    := .T.
+
+     //Monta o objeto de log detalhado
+    oLogObject["status"]  := cStatus // 0 = Erro 1 = Sucesso
+    oLogObject["idinteg"] := ""
+    oLogObject["nomapi"]  := cApiName
+    oLogObject["rotina"]  := cRoutine
+    oLogObject["tabela"]  := cTable
+    oLogObject["recno"]   := nRecno 
+    oLogObject["data"]    := DToS(Date()) // Usa a data atual do servidor
+    oLogObject["hora"]    := Time()
+    oLogObject["msgresp"] := cMsgResp
+    oLogObject["msgerr"]  := cMsg
+    oLogObject["jsonbod"] := oBody:ToJson()
+   	oLogObject["jsonret"] := AnswerFormat(502, cMsg, cMsgRet)
+
+    //Grava o log na tabela SZL
+    If lGravaSZL
+        If !oLog:AddItem(oLogObject)
+            // Se a gravação do log falhar, envia uma mensagem para o admin do sistema
+            U_AdminMsg("[LogErrorAPI] Falha ao gravar log: " + oLog:GetError(), IsBlind())
+        EndIf
+    EndIf
+    
+    FreeObj(oLogObject)
+    FreeObj(oErrorResponse)
+    FreeObj(oAux)
+
+Return
+
+
+
+
+/*
+===============================================================================================
+===============================================================================================
+|| SERVIDOR DE LICENÇA EZ4 
+===============================================================================================
+===============================================================================================
+*/
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZSERVER.prw
+===============================================================================================
+||   Funcao: 	EZSERVER
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	10/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static Function EZSERVER(cCNPJ, cProduto, msgRetorno)
+
+    Local oObjRet
+    Local lRet       := .T.     
+    Local cResult    := ""
+
+    Private cTabela     := "TABEZ4"
+    Private cKeyPadrao  := "6364415226B35B3794C966F0276AFD1B9B7C082EA8632C5F292B94D745EDA1DC585A40F30D1A5D605B2AB2EB13E9D815B312A02308ED0C5D70302EC21A8594A0"
+
+    Private cCNPJParam := aLLTRIM(SuperGetMV("EZ_CNPJPAR" ,.F.,""))  // Deverá ser do tipo Caracter e possuir apenas o CNPJ da empresa principal
+    
+    If !Empty(cCNPJParam)
+        cCNPJ := cCNPJParam
+    Else 
+        cCNPJ := SM0->M0_CGC
+    Endif 
+
+    cProduto := Padr(cProduto,30)
+
+    EZAbreTab(cTabela)
+
+    // Criação da tabela que trata a volumetria
+  
+    dbSelectArea(cTabela)
+
+    If !(cTabela)->(dbSeek(cProduto+cCNPJ))
+
+        cResult := Ez4Connect(cCNPJ, cProduto)
+        EZ4AtuTab(cCNPJ,cProduto,cResult)
+
+    Else
+
+        While !(cTabela)->(Eof()) .And. cProduto == TABEZ4->PRODUTO  .AND. cCNPJ == TABEZ4->CNPJ
+            cResult += Alltrim((cTabela)->DADOS)
+            (cTabela)->(dbSkip())
+        Enddo
+
+        If Empty(cResult)
+            cResult := Ez4Connect(cCNPJ, cProduto)
+            if !EMPTY(cResult)
+                EZ4AtuTab(cCNPJ,cProduto,cResult)
+            else             
+                 msgRetorno := "Falha na conexão com o Servidor de Licenças. " + CRLF + "Por favor entrar em contato com a EZ4 Consultoria!"
+            ENDIF
+        Endif 
+
+    Endif
+
+    If Empty(cResult)
+        
+        msgRetorno := "Erro na Autenticação!"+CRLF+"Favor entrar em contato com EZ4"
+        lRet := .F.
+
+    Else 
+        cResult = rc4crypt(cResult, cKeyPadrao, .F., .T.)
+
+        If FWJsonDeserialize(cResult,@oObjRet)
+            
+            dDTFImCtr := STOD(oObjRet:DATAFIMCONTRATO)
+            dDtProx   := STOD(StrTran(oObjRet:DATAPROXIMAVALIDACAO,"/",""))
+            cKeyEz4   := oObjRet:CODBLOCK
+
+            If (ddatabase > dDTFImCtr) .Or.  dDatabase > dDtProx // OK
+                cResult := Ez4Connect(cCNPJ, cProduto)
+                EZ4AtuTab(cCNPJ,cProduto,cResult)
+                cResult = rc4crypt(cResult, cKeyPadrao, .F., .T.)
+                If FWJsonDeserialize(cResult,@oObjRet)
+                    dDTFImCtr := STOD(oObjRet:DATAFIMCONTRATO)
+                    dDtProx   := STOD(StrTran(oObjRet:DATAPROXIMAVALIDACAO,"/",""))
+                    cKeyEz4   := oObjRet:CODBLOCK
+                Endif 
+            Endif 
+
+            If (ddatabase > dDTFImCtr)
+
+                msgRetorno := "Produto com contrato para CNPJ " + oObjRet:CNPJ +" vencido em " + DTOC(dDTFImCtr) + CRLF + "Por favor entrar em contato com a EZ4 Consultoria!"
+                lRet := .F.
+
+            ElseIf dDatabase > dDtProx
+
+                If !Empty(oObjRet:CHAVE)
+
+                    If oObjRet:STATUS == '1'
+                        EZ4AtuTab(cCNPJ,cProduto,cResult)    
+                    Else
+                        msgRetorno := "Produto com bloqueio Financeiro"+CRLF+"Entre em contato com a EZ4 Consultoria"
+                        lRet := .F.
+                    Endif 
+                    
+                Else
+
+                    msgRetorno := "Produto Sem Licença, Para contratar entre em contato com a EZ4 Consultoria"
+                    lRet := .F.
+
+                Endif
+
+            Endif 
+
+        Endif
+    
+    Endif 
+
+Return lRet
+
+
+
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZCLIENT.prw
+===============================================================================================
+||   Funcao: 	EZAbreTab
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	10/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static  Function EZAbreTab(cTabela) // Cria/abre as tabelas
+
+    Local aStru := {}
+ 
+    aStru := {  { "PRODUTO" , "C" , 30 , 0 },;
+                { "CNPJ"    , "C" , 14 , 0 },;                
+                { "SEQ"     , "N" , 10 , 0 },;
+                { "DADOS"   , "C" , 900 , 0 }}
+    
+    cTabela := upper(AllTrim(cTabela))
+
+    If Select(cTabela) == 0
+
+        If !MsFile(cTabela,,"TOPCONN")
+            dbCreate(cTabela, aStru, "TOPCONN")
+            dbUseArea(.T.,"TOPCONN",cTabela,cTabela,.F.)
+            (cTabela)->(dbCreateIndex( cTabela+'1' , "PRODUTO+CNPJ+SEQ" , {||PRODUTO+CNPJ+SEQ}) )
+            (cTabela)->(dbCloseArea())
+        EndIf
+        dbUseArea(.T.,"TOPCONN",cTabela,cTabela,.T.)
+        (cTabela)->(DbSetIndex(cTabela+'1'))
+        
+    EndIf
+    
+Return
+
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZCLIENT.prw
+===============================================================================================
+||   Funcao: 	Ez4Connect
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	14/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static Function Ez4Connect(cCNPJ, cProduto)
+
+    Local oRest 
+    Local oRestEnv
+    Local oObjRet
+    Local aHeader    := {}
+    //Local cURL     := "http://177.153.229.178:8097"
+    Local cURL       := "http://license.ez4.com.br:8097"
+    Local cPath      := "/rest/EZLICENCAPI"
+    Local cResult    := ""
+    Local oJson 
+
+    Local cIPSRVINT := Alltrim(SuperGetMV("EZ_IPSRVIN" ,.F.,""))
+   //10.127.248.5                                                                                                                                                                                                                                              
+    If !Empty(cIPSRVINT)
+        cURL := "http://"+cIPSRVINT+":8097"
+    Endif
+
+	// Inclui Cabeçalho
+ 	aAdd( aHeader , "Authorization: Basic bGVvbmFyZG8ubGltYToxMjM0NTY="  )
+    aAdd( aHeader , "Username: leonardo.lima"  )
+    aAdd( aHeader , "Password: 123456"  )
+
+	oRest := FWRest():New(cURL)
+    oRest:SetPath( cPath + "?token="+cCNPJ+"&produto="+cProduto)
+
+	If oRest:Get( aHeader )
+
+        cResult := oRest:cResult
+
+        cResult = rc4crypt(cResult, cKeyPadrao, .F., .T.)
+
+        If FWJsonDeserialize(cResult,@oObjRet)
+
+            oJson := JsonObject():new()
+            oJson["status"]               := oObjRet:STATUS
+            oJson['dataFimContrato']      := oObjRet:DATAFIMCONTRATO
+            oJson['dataProximaValidacao'] := oObjRet:DATAPROXIMAVALIDACAO
+            oJson['produto']              := oObjRet:PRODUTO
+            oJson['contrato']             := oObjRet:contrato
+            oJson['codBlock']             := oObjRet:codBlock
+            oJson['chave']                := If(!Empty(oObjRet:codBlock),&(oObjRet:codBlock),"")
+            oJson['cnpj']                 := oObjRet:CNPJ
+
+            cResult := oJson:toJSON()
+            cResult := rc4crypt(cResult, cKeyPadrao, .T., .F.)
+
+            /*
+            oRestEnv := FWRest():New(cURL)
+            oRestEnv:SetPath( cPath + "?token="+cResult)
+
+            If oRestEnv:Post( aHeader )
+
+                cResult := oRestEnv:cResult
+
+            Endif            
+            */
+
+        Endif 
+
+    Endif 
+
+Return cResult 
+
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZCLIENT.prw
+===============================================================================================
+||   Funcao: 	EZ4AtuTab
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	14/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static Function EZ4AtuTab(cCNPJ,cProduto,cResult)
+
+    Local nLinhas    := 0 
+    Local nPos       := 1
+    Local nX         := 0 
+    
+    dbSelectArea((cTabela))
+
+    If (cTabela)->(dbSeek(cProduto+cCNPJ))
+
+        While !(cTabela)->(Eof()) .And. cProduto+cCNPJ == (cTabela)->(PRODUTO+CNPJ)
+            RecLock((cTabela),.F.)
+            (cTabela)->(dbDelete())
+            MsUnlock()
+            (cTabela)->(dbSkip())
+        Enddo 
+    Endif 
+
+    nLinhas := Int(Len(cResult)/900)+1
+    For nX := 1 to nLinhas
+        RecLock((cTabela),.T.)
+        (cTabela)->PRODUTO  := cProduto
+        (cTabela)->CNPJ     := cCNPJ
+        (cTabela)->SEQ      := nX
+        (cTabela)->DADOS    := SubStr(cResult,nPos,900)
+        MsUnlock()
+        nPos+=900
+    Next
+
+Return 
+
+*===============================================*
+Static Function Decript(cString)
+*===============================================*
+Local cRet
+ 
+cRet := PoliEncript(cString,"SourceSafe",1)
+cRet := HexEncript(cRet,1)
+ 
+Return cRet
+ 
+*===============================================*
+Static Function Encript(cString)
+*===============================================*
+Local cRet
+ 
+cRet := PoliEncript(cString,"SolutionProvider",1)
+cRet := HexEncript(cRet,1)
+ 
+Return cRet

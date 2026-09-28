@@ -1,0 +1,1132 @@
+#Include "TOTVS.ch"
+#Include "TopConn.ch"
+#Include "TBIConn.ch"
+#Include "Protheus.ch"
+#Include "tlpp-core.th"
+#Include "tlpp-rest.th"
+
+#Define cTitApp "Consulta Gen�rica REST"
+#Define Enter Chr(13) + Chr(10)
+
+/*/{Protheus.doc} ConsultaGenerica
+Função chamada pelo verbo Put
+@type function
+@version V 1.00
+@author Edson Hornberger
+@since 05/06/2024
+@obs Verbo: PUT - EndPoint: /EZ4/GenQry/:id
+@return logical, Sempre Verdadeiro
+/*/
+@Put("/Toch/GenQry/:id")
+User Function ConsultaGenerica() as Logical
+
+	Local oParam   := Nil                as JSON
+	Local oBody    := Nil                as JSON
+	Local oResult  := Nil                as JSON
+	Local oAux     := Nil                as JSON
+	Local oError   := ErrorClass():New() as Object
+	Local cCNPJ    := ""                 as Character
+	Local cCodQry  := ""                 as Character
+	Local cTabFrom := ""                 as Character
+	Local aCampos  := {}                 as Array
+	Local cWhere   := ""                 as Character
+	Local aInner   := {}                 as Array
+	Local aLOuter  := {}                 as Array
+	Local aROuter  := {}                 as Array
+	Local cOrder   := ""                 as Character
+	Local cGroup   := ""                 as Character
+	Local cLimit   := ""                 as Character
+	Local msgRetorno:= ""                as Character
+
+	TRY
+
+		// Define o formato de retorno do Response para o oRest
+		oAux := JsonObject():New()
+		oAux:FromJson('{"Content-Type":"application/json"}')
+		oRest:setHeaderResponse(oAux)
+		FreeObj(oAux)
+
+		// Coleta path param - Codigo da Query
+		oParam  := oRest:GetPathParamsRequest()
+		cCodQry := oParam["id"]
+
+		If Empty(AllTrim(cCodQry))
+
+			oRest:SetStatusCode(600)
+			oRest:SetResponse(U_AnswerFormat(600, "Codigo da Consulta nao informado", "Passar o Codigo da Consulta por Path Param"))
+			Return .T.
+
+		Else
+
+			// Coleta dados do Body da Requisição
+			oBody := JsonObject():New()
+			oBody:FromJson(oRest:GetBodyRequest())
+
+			// Pega CNPJ para preparar o Ambiente
+
+			ConOut("Empresa:" + cEmpAnt + " Filial: " + cFilAnt)
+			If oBody:HasProperty("cnpj")
+
+				cCNPJ := oBody["cnpj"]
+
+				// If !U_PrepEnvironment(cCNPJ)
+
+				// 	oRest:SetStatusCode(602)
+				// 	oRest:SetResponse(U_AnswerFormat(602, "Erro ao preparar ambiente", "Erro ao preparar o ambiente com o CNPJ informado"))
+				// 	Return .T.
+
+				// Else
+				// /*=====================================================================================================================================*/
+				// 	// Controle de Licenciamento EZ4
+				// /*=====================================================================================================================================*/
+				// 	If !SuperGetMV("EZ_DEMO",.F.,.F.)
+				// 		If !EZSERVER(SM0->M0_CGC, "010010001",@msgRetorno)    // CNPJ + PRODUTO
+				// 			oRest:SetStatusCode(502)
+				// 			oRest:SetResponse(U_AnswerFormat(502, "Erro Licenciamento", msgRetorno))
+				// 			Return .T.
+				// 		Endif
+				// 	Endif
+
+				// Verifica se a Tabela de Cadastro de Querys existe
+				If !ChkFile("EZX")
+
+					If !AtuDicQry()
+
+						oRest:SetStatusCode(502)
+						oRest:SetResponse(U_AnswerFormat(502, "Erro Tabela de Consulta", "Tabela de Consulta Generica nao existe"))
+						Return .T.
+
+					EndIf
+
+				EndIf
+
+				// Coleta dados do Body da Requisição
+				If oBody:HasProperty("select")
+
+					aCampos := oBody["select"]
+
+				EndIf
+
+				If oBody:HasProperty("from")
+
+					cTabFrom := oBody["from"]
+
+				EndIf
+
+				If oBody:HasProperty("inner")
+
+					aInner := oBody["inner"]
+
+				EndIf
+
+				If oBody:HasProperty("louter")
+
+					aLOuter := oBody["louter"]
+
+				EndIf
+
+				If oBody:HasProperty("router")
+
+					aROuter := oBody["router"]
+
+				EndIf
+
+				If oBody:HasProperty("where")
+
+					cWhere := oBody["where"]
+
+				EndIf
+
+				If oBody:HasProperty("order")
+
+					cOrder := oBody["order"]
+
+				EndIf
+
+				If oBody:HasProperty("group")
+
+					cGroup := oBody["group"]
+
+				EndIf
+
+				If oBody:HasProperty("limit")
+
+					cLimit := oBody["limit"]
+
+				EndIf
+
+				// Executa a Query
+				If ExecQuery(cCodQry, aCampos, cTabFrom, aInner, aLOuter, aROuter, cWhere, cGroup, cOrder, cLimit, @oResult)
+
+					oRest:SetStatusCode(200)
+
+				Else
+
+					oRest:SetStatusCode(603)
+
+				EndIf
+
+				oRest:SetResponse(oResult)
+
+				//EndIf
+
+			Else
+
+				oRest:SetStatusCode(601)
+				oRest:SetResponse(U_AnswerFormat(601, "Faltando chave cnpj", "Nao foi informada a chave cnpj"))
+
+			EndIf
+
+		EndIf
+
+	CATCH oError
+
+		oRest:SetStatusCode(501)
+		oRest:SetResponse(U_AnswerFormat(501, "Erro DEV", oError:Description))
+		FreeObj(oParam)
+		FreeObj(oBody)
+		FreeObj(oResult)
+
+	ENDTRY
+
+	FreeObj(oError)
+
+Return .T.
+
+/*/{Protheus.doc} AtuDicQry
+Função para Criar Dicioários de Dados da Tabela de Cadastro de Querys
+@type function
+@version V 1.00
+@author Edson Hornberger
+@since 05/06/2024
+@return logical, Verdadeiro se criou
+/*/
+Static Function AtuDicQry() as Logical
+
+	Local lRet      := .T.                                                                                                                        as Logical
+	Local i         := 0                                                                                                                          as Numeric
+	Local cAux      := ""                                                                                                                         as Character
+	Local aDados    := {}                                                                                                                         as Array
+	Local nTamFil   := FwSizeFilial()                                                                                                             as Numeric
+	Local cReservO  := 'XXXXXX X        '                                                                                                         as Character
+	Local cUsado    := 'x       x       x       x       x       x       x       x       x       x       x       x       x       x       x x     ' as Character
+	Local cNaoUsado := 'x       x       x       x       x       x       x       x       x       x       x       x       x       x       x       ' as Character
+	Local oError    := ErrorClass():New()                                                                                                         as Object
+
+	TRY
+
+		// Atualizando o SIX
+		aAdd(aDados, {"EZX", "1", "EZX_FILIAL+EZX_COD", "Cod.Consulta"})
+
+		SIX->(dbSetOrder(1)) // INDICE+ORDEM
+
+		For i := 1 To Len(aDados)
+
+			SIX->(RecLock("SIX", !dbSeek(aDados[i, 1] + aDados[i, 2])))
+			SIX->INDICE     := aDados[i, 1]
+			SIX->ORDEM      := aDados[i, 2]
+			SIX->CHAVE      := aDados[i, 3]
+			SIX->DESCRICAO  := aDados[i, 4]
+			SIX->PROPRI     := "U"
+			SIX->SHOWPESQ   := "S"
+			SIX->(dbUnlock())
+
+		Next i
+
+		// Atualizando o SX2
+		aDados := {}
+		aadd(aDados, {"EZX", "CADASTRO DE QUERYS", "EZX_FILIAL+EZX_COD"})
+
+		cAux := cEmpAnt + "0"
+
+		For i := 1 To Len(aDados)
+
+			If !AbreSx("SX2", "X2_CHAVE = '" + aDados[i, 1] + "'" , "")
+
+				SX2->(dbAppend(.T.))
+				SX2->(msUnlock())
+				SX2VW->(dbCloseArea())
+				nRecnoSX := SX2->(Recno())
+				cUpd := " UPDATE " + RetSqlName("SX2")
+				cUpd += " SET "
+				cUpd += " X2_CHAVE   = '" + aDados[i, 1] + "' , "
+				cUpd += " X2_ARQUIVO = '" + aDados[i, 1] + cAux + "' , "
+				cUpd += " X2_NOME    = '" + aDados[i, 2] + "' , "
+				cUpd += " X2_NOMESPA = '" + aDados[i, 2] + "' , "
+				cUpd += " X2_NOMEENG = '" + aDados[i, 2] + "' , "
+				cUpd += " X2_UNICO   = '" + aDados[i, 3] + "' , "
+				cUpd += " X2_MODO    = 'C', "
+				cUpd += " X2_MODOUN  = 'C', "
+				cUpd += " X2_MODOEMP = 'C', "
+				cUpd += " X2_TAMFIL = " + cValToChar(nTamFil) + ", "
+				cUpd += " X2_DELET   = 0  "
+				cUpd += " WHERE R_E_C_N_O_ = " + cValToChar(nRecnoSX)
+				TCSqlExec(cUpd)
+
+			EndIf
+
+		Next i
+
+		aDados := {}
+
+		// CAMPOS CHAVE
+		aAdd(aDados, {"EZX", "01", "EZX_FILIAL", "C", nTamFil, 0, "Filial"      , "Filial do Sistema"        , "@!" , cReservO, cNaoUsado, "N", "A", "R","","","","", "1", "033"})
+		aAdd(aDados, {"EZX", "02", "EZX_COD"   , "C", 30     , 0, "Cod.Consulta", "Codigo da consulta"       , ""   , cReservO, cUsado   , "S", "A", "R","","","","", "1",""})
+		aAdd(aDados, {"EZX", "04", "EZX_DESCRI", "C", 60     , 0, "Descricao"   , "Descricao da consulta"    , ""   , cReservO, cUsado   , "S", "A", "R","","","","", "1",""})
+		aAdd(aDados, {"EZX", "05", "EZX_QUERY" , "M", 10     , 0, "Query"       , "Query da consulta"        , ""   , cReservO, cUsado   , "N", "A", "R","","","","", "1",""})
+		aAdd(aDados, {"EZX", "06", "EZX_PERMTB", "C", 250    , 0, "Tab.Perm."   , "Tabelas Permitidas"       , "@!" , cReservO, cUsado   , "S", "A", "R","","","","", "1",""})
+
+		For i := 1 To Len(aDados)
+
+			If !AbreSx("SX3", "X3_CAMPO = '" + aDados[i, 3] + "'", "")
+
+				SX3->(dbAppend())
+				SX3->(msUnlock())
+				SX3VW->(dbCloseArea())
+				nRecnoSX := SX3->(Recno())
+				cUpd := " UPDATE " + RetSqlName("SX3")
+				cUpd += " SET "
+				cUpd += " X3_ARQUIVO = '" + aDados[i, 1] + "' , "
+				cUpd += " X3_ORDEM   = '" + aDados[i, 2] + "' , "
+				cUpd += " X3_CAMPO   = '" + aDados[i, 3] + "' , "
+				cUpd += " X3_TIPO    = '" + aDados[i, 4] + "' , "
+				cUpd += " X3_TAMANHO =  " + cValToChar(aDados[i, 5]) + "  , "
+				cUpd += " X3_DECIMAL =  " + cValToChar(aDados[i, 6]) + "  , "
+				cUpd += " X3_TITULO  = '" + aDados[i, 7] + "' , "
+				cUpd += " X3_TITSPA  = '" + aDados[i, 7] + "' , "
+				cUpd += " X3_TITENG  = '" + aDados[i, 7] + "' , "
+				cUpd += " X3_DESCRIC = '" + aDados[i, 8] + "' , "
+				cUpd += " X3_DESCSPA = '" + aDados[i, 8] + "' , "
+				cUpd += " X3_DESCENG = '" + aDados[i, 8] + "' , "
+				cUpd += " X3_PICTURE = '" + aDados[i, 9] + "' , "
+				cUpd += " X3_RESERV  = '" + aDados[i, 10] + "' , "
+				cUpd += " X3_USADO   = '" + aDados[i, 11] + "' , "
+				cUpd += " X3_PROPRI  = 'U', "
+				cUpd += " X3_NIVEL   = 0, "
+				cUpd += " X3_BROWSE  = '" + aDados[i, 12] + "' , "
+				cUpd += " X3_VISUAL  = '" + aDados[i, 13] + "' , "
+				cUpd += " X3_CONTEXT = '" + aDados[i, 14] + "' , "
+				cUpd += " X3_F3      = '" + aDados[i, 15] + "' , "
+				cUpd += " X3_VALID   = '" + aDados[i, 16] + "' , "
+				cUpd += " X3_CBOX    = '" + If(Len(aDados[i]) > 16, aDados[i, 17], "") + "' , "
+				cUpd += " X3_RELACAO = '" + If(Len(aDados[i]) > 17, aDados[i, 18], "") + "' , "
+				cUpd += " X3_FOLDER  = '" + If(Len(aDados[i]) > 18, aDados[i, 19], "") + "' , "
+				cUpd += " X3_GRPSXG  = '" + aDados[i, 20] + "' "
+				cUpd += " WHERE R_E_C_N_O_ = " + cValToChar(nRecnoSX)
+				TCSqlExec(cUpd)
+
+			EndIf
+
+		Next i
+
+		// ATUALIZANDO PARAMETROS
+		aDados := {}
+		cAux := xFilial("SX6")
+		aAdd(aDados, {cAux, "EZ_WSINI", "C", "Última atualizacao do dicionario" , DtoC(Date()) + " " + Time()})
+		aAdd(aDados, {cAux, "EZ_WSKEY", "C", "Token de acesso (InterfaceEZ4)"   , "d01ca615de750520032ceb323b2a45a058ddc8bf05ad142bccf0353adcc78c87"})
+
+		For i := 1 To Len(aDados)
+
+			If !AbreSx("SX6", "X6_VAR = '" + aDados[i, 2] + "'", "")
+
+				SX6->(dbAppend())
+				SX6->(msUnlock())
+				SX6VW->(dbCloseArea())
+				nRecnoSX := SX6->(Recno())
+				cUpd := " UPDATE SX6" + cEmpAnt + "0"
+				cUpd += " SET "
+				cUpd += " X6_FIL     = '" + aDados[i, 1] + "', "
+				cUpd += " X6_VAR     = '" + aDados[i, 2] + "', "
+				cUpd += " X6_TIPO    = '" + aDados[i, 3] + "', "
+				cUpd += " X6_DESCRIC = '" + aDados[i, 4] + "', "
+				cUpd += " X6_CONTEUD = '" + aDados[i, 5] + "' "
+				cUpd += " WHERE R_E_C_N_O_ = " + cValToChar(nRecnoSX)
+				TCSqlExec(cUpd)
+
+			Endif
+
+		Next
+
+		// realizar a atualizacao do banco
+		lRet := ChkFile('EZX')
+
+		If lRet
+
+			CarDataEZX()
+
+		EndIf
+
+	CATCH oError
+
+		ConOut("[ERROR] (" + DtoC(dDataBase) + " - " + Time() + ") - AtuDicQry: " + oError:Description)
+
+	ENDTRY
+
+Return lRet
+
+/*/{Protheus.doc} AbreSx
+Função que abre tabelas SXs para poder realizar a manutenção
+@type function
+@version V 1.00
+@author Edson Hornberger
+@since 05/06/2024
+@param cSX, character, Tabela Sx 
+@param cFiltro, character, Filtro
+@param cOrdem, character, Ordem 
+@return logical, Verdadeiro se conseguiu abrir a tabela
+/*/
+Static Function AbreSx(cSX as Character, cFiltro as Character, cOrdem as Character) as Logical
+
+	Local cQry    := ""                 as Character
+	Local cArea   := cSX + "VW"         as Character
+	Local i       := 0                  as Numeric
+	Local aStruSx := {}                 as Array
+	Local cFile   := ""                 as Character
+	Local lRet    := .F.                as Logical
+	Local oError  := ErrorClass():New() as Object
+
+	TRY
+
+		If !Empty(AllTrim(cSX))
+
+			If Select("SXTRB") > 0
+
+				SXTRB->(dbCloseArea())
+
+			EndIf
+
+			OpenSxs(,,,, cEmpAnt, "SXTRB", cSX,, .F.)
+			aStruSx := SXTRB->(dbStruct())
+			cFile := SXTRB->(dbInfo(10))
+
+			If Select((cArea)) > 0
+
+				(cArea)->(dbCloseArea())
+
+			EndIf
+
+			cQry := "Select "
+
+			For i := 1 To Len(aStruSx)
+
+				cQry += Enter + aStruSx[i, 1] + ' as ' + 'C' + SubStr(aStruSx[i, 1], At('_', aStruSx[i, 1]) + 1) + ','
+
+			Next i
+
+			cQry := SubStr(cQry, 1, Len(cQry) - 1) + '  ' + Enter
+			cQry += "from " + cfile + '  ' + Enter
+			cQry += "where D_E_L_E_T_ <> '*' " + Enter
+
+			If !Empty(AllTrim(cFiltro))
+
+				cQry += "and " + cFiltro + '  ' + Enter
+
+			EndIf
+
+			If !Empty(AllTrim(cOrdem))
+
+				cQry += "order by " + cOrdem + '  ' + Enter
+
+			EndIf
+
+			DbUseArea(.T., "TOPCONN", TcGenQry(,, ChangeQuery(cQry)), cArea, .F., .T.)
+
+			If (cArea)->(!EOF())
+
+				lRet := .T.
+
+			EndIf
+
+		EndIf
+
+	CATCH oError
+
+		ConOut("[ERROR] (" + DtoC(dDataBase) + " - " + Time() + ") - AbreSx: " + oError:Description)
+
+	ENDTRY
+
+Return lRet
+
+
+/*/{Protheus.doc} CarDataEZX
+Função que alimenta a tabela Cadastros de Query's com exemplos prontos
+@type function
+@version V 1.00
+@author Edson Hornberger
+@since 05/06/2024
+/*/
+Static Function CarDataEZX()
+
+	Local i      := 0                  as Numeric
+	Local aDados := {}                 as Array // Carga basica de querys
+	Local cAux   := xFilial("EZX")     as Character
+	Local oError := ErrorClass():New() as Object
+
+	TRY
+
+		aAdd(aDados, {cAux, "EZ4_PADRAO_CLIENTES"       , "QUERY DA TABELA SA1 (CADASTRO DE CLIENTE)"        , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SA1"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_FORNECEDORES"   , "QUERY DA TABELA SA2 (CADASTRO DE FORNECEDORES)"   , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SA2"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_VENDEDORES"     , "QUERY DA TABELA SA3 (CADASTRO DE VENDEDORES)"     , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SA3"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_TRANSPORTADORAS", "QUERY DA TABELA SA4 (CADASTRO DE TRANSPORTADORAS)", "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SA4"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_PRODUTOS"       , "QUERY DA TABELA SB1 (CADASTRO DE PRODUTOS)"       , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SB1"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_NATUREZXS"      , "QUERY DA TABELA SED (CADASTRO DE NATUREZXS)"      , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SED"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_CONDPAGTO"      , "QUERY DA TABELA SE4 (CADASTRO DE COND.PAGAMENTO)" , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SE4"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_PEDCOMPRAS"     , "QUERY DA TABELA SC7 (PEDIDOS DE COMPRAS)"         , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "SC7"})
+		aAdd(aDados, {cAux, "EZ4_SA2_SA4_SE4      "     , "QUERY NAS TABELAS SA2, SA4 E SE4"                 , "SELECT #CAMPOS FROM #FROM #LOUTER WHERE #WHERE ORDER BY #ORDER", "SA2;SA4;SE4"})
+		aAdd(aDados, {cAux, "EZ4_CONTAS           "     , "QUERY DA TABELA CT1 (CONTA CONTABIL)"             , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "CT1"})
+		aAdd(aDados, {cAux, "EZ4_PADRAO_PEDCOMPRAS"     , "QUERY DA TABELA CTO (MOEDAS CONTABEIS)"           , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "CTO"})
+		aAdd(aDados, {cAux, "EZ4_BUSCA_SALDO"           , "QUERY DA TABELA AKD - PCO - Lançamentos"          , "SELECT #CAMPOS FROM #FROM WHERE #WHERE ORDER BY #ORDER", "AKD"})
+
+		EZX->(dbSetOrder(1)) // EZX_FILIAL+EZX_COD
+
+		For i := 1 To Len(aDados)
+
+			If EZX->(dbSeek(aDados[i, 1] + aDados[i, 2]))
+
+				EZX->(RecLock("EZX", .F.))
+
+			Else
+
+				EZX->(RecLock("EZX", .T.))
+
+			EndIf
+
+			EZX->EZX_FILIAL := aDados[i, 1]
+			EZX->EZX_COD    := aDados[i, 2]
+			EZX->EZX_DESCRI := aDados[i, 3]
+			EZX->EZX_QUERY  := aDados[i, 4]
+			EZX->EZX_PERMTB := aDados[i, 5]
+			EZX->(dbUnlock())
+
+		Next i
+
+	CATCH oError
+
+		ConOut("[ERROR] (" + DtoC(dDataBase) + " - " + Time() + ") - CarDataEZX: " + oError:Description)
+
+	ENDTRY
+
+Return
+
+/*/{Protheus.doc} ExecQuery
+Função para execução da Query 
+@type function
+@version V 1.00
+@author Edson Hornberger
+@since 05/06/2024
+@param cCodQry, character, Código da Query no Cadastro de Query's
+@param aCampos, array, Array com campos da SELECT
+@param cTabFrom, character, Tabela principal da Query FROM
+@param aInner, array, Array de INNER
+@param aLOuter, array, Array com LEFT OUTER
+@param aROuter, array, Array com RIGHT OUTER
+@param cWhere, character, String com WHERE da Query
+@param cGroup, character, String com GROUP BY da Query 
+@param cOrder, character, String com ORDER BY da Query 
+@param oResult, json, Json com Resultados (podendo ser com sucesso ou com falha)
+@return logical, Verdadeiro se Json com Sucesso
+/*/
+Static Function ExecQuery(cCodQry as Character, aCampos as Array, cTabFrom as Character, aInner as Array, aLOuter as Array, aROuter as Array, cWhere as Character, cGroup as Character, cOrder as Character, cLimit as Character, oResult as JSON) as Logical
+
+	Local lRet     := .T.                as Logical
+	Local cQuery   := ""                 as Character
+	Local aArea    := GetArea()          as Array
+	Local aAreaEZX := EZX->(GetArea())   as Array
+	Local nI       := 0                  as Numeric
+	Local cCampos  := ""                 as Character
+	Local cInners  := ""                 as Character
+	Local cOuters  := ""                 as Character
+	Local oAux     := Nil                as Object
+	Local aRet     := {}                 as Array
+	Local aStruct  := {}                 as Array
+	Local oError   := ErrorClass():New() as Object
+	Local aTabPerm := {}                 as Array
+	Local cOrdbkp  := ""                 as Character
+
+	TRY
+
+		dbSelectArea("EZX")
+		dbSetOrder(1)
+
+		cCodQry := upper(cCodQry)
+
+		If dbSeek(xFilial("EZX") + cCodQry)
+
+			If "UPDATE " $ Upper(AllTrim(EZX->EZX_QUERY)) .Or. "DROP " $ Upper(AllTrim(EZX->EZX_QUERY)) .Or. "DELETE " $ Upper(AllTrim(EZX->EZX_QUERY)) .Or. "ALTER " $ Upper(AllTrim(EZX->EZX_QUERY)) .Or. "INSERT " $ Upper(AllTrim(EZX->EZX_QUERY))
+
+				lRet := .F.
+				oResult := U_AnswerFormat(603, "Cadastro de Querys EZX", "Comando INSERT, UPDATE, DELETE, DROP e ALTER nao permitidas na Query")
+				Return lRet
+
+			EndIf
+
+			aTabPerm := StrTokArr(EZX->EZX_PERMTB, ";,-/\_")
+
+			If Len(aTabPerm) <= 0
+
+				lRet := .F.
+				oResult := U_AnswerFormat(603, "Permissao de Tabela", "Nao foi informada a(s) tabela(s) permitidas na Query")
+				Return lRet
+
+			EndIf
+			// Query básica do Cadastro de Query's
+			cQuery := EZX->EZX_QUERY
+			// Campos da Select
+			If Len(aCampos) > 0
+
+				For nI := 1 To Len(aCampos)
+
+					cCampos += aCampos[nI] + Iif(nI = Len(aCampos), " ", ", ")
+
+				Next nI
+
+				cQuery := StrTran(cQuery, "#CAMPOS", cCampos)
+
+			Else
+
+				cQuery := StrTran(cQuery, "#CAMPOS", " * ")
+
+			EndIf
+			// Tabela Principal da Query
+			If !Empty(cTabFrom)
+
+				If aScan(aTabPerm, {|x| Upper(AllTrim(x)) = Upper(AllTrim(cTabFrom))}) = 0
+
+					lRet := .F.
+					oResult := U_AnswerFormat(603, "Tabela nao permitida", "Tabela informada na chave from nao e permitida")
+					Return lRet
+
+				EndIf
+
+				cQuery := StrTran(cQuery, "#FROM", RetSqlName(cTabFrom) + " " + cTabFrom + " ")
+
+			Else
+
+				oResult := U_AnswerFormat(603, "Chave from", "A chave from nao foi informada")
+				lRet := .F.
+				Return lRet
+
+			EndIf
+			// Verifica se existem INNER JOIN
+			If Len(aInner) > 0
+
+				For nI := 1 To Len(aInner)
+
+					If aScan(aTabPerm, {|x| Upper(AllTrim(x)) = Upper(AllTrim(Left(aInner[nI], 3)))}) = 0
+
+						lRet := .F.
+						oResult := U_AnswerFormat(603, "Tabela nao permitida", "Tabela informada na chave inner nao e permitida")
+						Return lRet
+
+					EndIf
+
+					//cInners += "INNER JOIN " + RetSqlName(Left(aInner[nI], 3)) + " " + Left(aInner[nI], 3) + " ON " + SubStr(aInner[nI], At("ON", aInner[nI]) + 2, Len(aInner[nI]) - At("ON", aInner[nI]) + 2) + Enter
+					cInners += "INNER JOIN " + RetSqlName(Left(aInner[nI], 3)) + " " + Left(aInner[nI], At(" ON", aInner[nI])) + " ON " + SubStr(aInner[nI], At("ON", aInner[nI]) + 2, Len(aInner[nI]) - At("ON", aInner[nI]) + 2) + Enter
+
+				Next nI
+
+				cQuery := StrTran(cQuery, "#INNER", cInners)
+
+			Else
+
+				cQuery := StrTran(cQuery, "#INNER", "")
+
+			EndIf
+			// Verifica se existem LEFT OUTER JOIN
+			If Len(aLOuter) > 0
+
+				For nI := 1 To Len(aLOuter)
+
+					If aScan(aTabPerm, {|x| Upper(AllTrim(x)) = Upper(AllTrim(Left(aLOuter[nI], 3)))}) = 0
+
+						lRet := .F.
+						oResult := U_AnswerFormat(603, "Tabela nao permitida", "Tabela informada na chave louter nao e permitida")
+						Return lRet
+
+					EndIf
+
+					//cOuters += "LEFT OUTER JOIN " + RetSqlName(Left(aLOuter[nI], 3)) + " " + Left(aLOuter[nI], 3) + " ON " + SubStr(aLOuter[nI], At("ON", aLOuter[nI]) + 2, Len(aLOuter[nI]) - At("ON", aLOuter[nI]) + 2) + Enter
+					cOuters += "LEFT OUTER JOIN " + RetSqlName(Left(aLOuter[nI], 3)) + " " + Left(aLOuter[nI], At(" ON", aLOuter[nI])) + " ON " + SubStr(aLOuter[nI], At("ON", aLOuter[nI]) + 2, Len(aLOuter[nI]) - At("ON", aLOuter[nI]) + 2) + Enter
+
+				Next nI
+
+				cQuery := StrTran(cQuery, "#LOUTER", cOuters)
+
+			Else
+
+				cQuery := StrTran(cQuery, "#LOUTER", "")
+
+			EndIf
+			// Verifica se existem RIGHT OUTER JOIN
+			If Len(aROuter) > 0
+
+				cOuters := ""
+
+				For nI := 1 To Len(aROuter)
+
+					If aScan(aTabPerm, {|x| Upper(AllTrim(x)) = Upper(AllTrim(Left(aROuter[nI], 3)))}) = 0
+
+						lRet := .F.
+						oResult := U_AnswerFormat(603, "Tabela nao permitida", "Tabela informada na chave router nao e permitida")
+						Return lRet
+
+					EndIf
+
+					//cOuters += "RIGHT OUTER JOIN " + RetSqlName(Left(aROuter[nI], 3)) + " " + Left(aROuter[nI], 3) + " ON " + SubStr(aROuter[nI], At("ON", aROuter[nI]) + 2, Len(aROuter[nI]) - At("ON", aROuter[nI]) + 2) + Enter
+					cOuters += "RIGHT OUTER JOIN " + RetSqlName(Left(aROuter[nI], 3)) + " " + Left(aROuter[nI],  At(" ON", aROuter[nI])) + " ON " + SubStr(aROuter[nI], At("ON", aROuter[nI]) + 2, Len(aROuter[nI]) - At("ON", aROuter[nI]) + 2) + Enter
+
+				Next nI
+
+				cQuery := StrTran(cQuery, "#ROUTER", cOuters)
+
+			Else
+
+				cQuery := StrTran(cQuery, "#ROUTER", "")
+
+			EndIf
+			// WHERE da Query
+			cQuery := StrTran(cQuery, "#WHERE", Iif(!Empty(cWhere), cWhere, " "))
+			// rownum ou limit da Query
+			If !Empty(AllTrim(cLimit))
+				If TCGetDB() == 'ORACLE'
+					cOrdbkp := "ORDER BY #ORDER"
+					cQuery := StrTran(cQuery, "ORDER BY #ORDER", "")
+					cQuery := StrTran(cQuery, "#LIMIT", "")
+					cQuery := StrTran(cQuery, "LIMIT", "")
+					cQuery += " AND ROWNUM <= " + cLimit
+					cQuery += " " + cOrdbkp + " "
+				Endif
+			EndIf
+			// ORDER BY da Query
+			If !Empty(AllTrim(cGroup))
+				cQuery := StrTran(cQuery, '#GROUP', Iif(!Empty(cGroup), cGroup, ""))
+			EndIf
+			// ORDER BY da Query
+			If !Empty(AllTrim(cOrder))
+				cQuery := StrTran(cQuery, "#ORDER", Iif(!Empty(cOrder), cOrder, ""))
+			EndIf
+			// LIMIT da  para SQL
+			If !Empty(AllTrim(cLimit))
+				If !TCGetDB() == 'ORACLE'
+					cQuery := StrTran(cQuery, "#LIMIT", cLimit, "")
+				Endif
+			EndIf
+			If !Empty(AllTrim(cQuery))
+
+				// Verifica se existe erro na execução da Query montada
+				If TCSqlExec(cQuery) > 0
+
+					lRet := .F.
+					oResult := U_AnswerFormat(603, "Erro na Query", TcSqlError())
+					Return lRet
+
+				EndIf
+
+				Iif(Select("TQRY") > 0, TQRY->(dbCloseArea()), Nil)
+				cQuery := ChangeQuery(cQuery)
+				TcQuery cQuery New Alias "TQRY"
+				dbSelectArea("TQRY")
+				dbGoTop()
+				aStruct := TQRY->(dbStruct())
+
+				// Monta array de JSON para retorno
+				While TQRY->(!EOF())
+
+					oAux := JsonObject():New()
+
+					For nI := 1 To Len(aStruct)
+
+						oAux[aStruct[nI, 01]] := TreatsData(&("TQRY->" + aStruct[nI, 01]), aStruct[nI, 01])
+
+					Next nI
+
+					aAdd(aRet, oAux)
+					FreeObj(oAux)
+					TQRY->(dbSkip())
+
+				EndDo
+
+				// Se existem dados retorna JSON de array
+				If Len(aRet) > 0
+
+					oResult := JsonObject():New()
+					oResult["result"] := aRet
+
+				Else
+
+					oResult :=  JsonObject():New()
+					oResult["result"] := "Query passada sem dados para retorno"
+
+				EndIf
+
+			Else
+
+				lRet := .F.
+				oResult := U_AnswerFormat(603, "Falta informacoes", "Falta informacoes para montar a Query")
+
+			EndIf
+
+		Else
+
+			lRet := .F.
+			oResult := U_AnswerFormat(603, "Codigo Consulta errado "+cCodQry+" "+cEmpAnt+" "+cFilAnt, "O Codigo da Consulta Generica informada nao existe")
+
+		EndIf
+
+	CATCH oError
+
+		lRet := .F.
+		oResult := U_AnswerFormat(603, "Erro DEV", oError:Description)
+
+	ENDTRY
+
+	RestArea(aAreaEZX)
+	RestArea(aArea)
+
+Return(lRet)
+
+/*/{Protheus.doc} TreatsData
+Função para tratar dados antes de passar para o JSON
+@type function
+@version V 1.00
+@author Edson Hornberger
+@since 05/06/2024
+@param xData, variant, Dado a ser tratado
+@param cCampo, character, Campo para verificar no SX3
+@return variant, Retorna o dado tratado
+/*/
+Static Function TreatsData(xData as Variant, cCampo as Character) as Variant
+
+	Local xRet   := Nil                as Variant
+	Local oError := ErrorClass():New() as Object
+
+	TRY
+
+		Do Case
+
+		Case FwSX3Util():GetFieldType(cCampo) = "C"
+			xRet := EncodeUTF8(xData, "cp1252")
+
+		Case FwSX3Util():GetFieldType(cCampo) = "D"
+			xRet := DToC(SToD(xData))
+
+		Case FwSX3Util():GetFieldType(cCampo) = "L"
+			xRet := cValToChar(xData)
+
+		OtherWise
+			xRet := xData
+
+		EndCase
+
+	CATCH oError
+
+		ConOut("[ERROR] (" + DToC(dDataBase) + " - " + Time() + " - " + oError:Description)
+
+	ENDTRY
+
+Return xRet
+
+
+
+
+/*
+===============================================================================================
+===============================================================================================
+|| SERVIDOR DE LICEN�A EZ4 
+===============================================================================================
+===============================================================================================
+*/
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZSERVER.prw
+===============================================================================================
+||   Funcao: 	EZSERVER
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	10/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static Function EZSERVER(cCNPJ, cProduto, msgRetorno)
+
+	Local oObjRet
+	Local lRet       := .T.
+	Local cResult    := ""
+
+	Private cTabela     := "TABEZ4"
+	Private cKeyPadrao  := "6364415226B35B3794C966F0276AFD1B9B7C082EA8632C5F292B94D745EDA1DC585A40F30D1A5D605B2AB2EB13E9D815B312A02308ED0C5D70302EC21A8594A0"
+
+	Private cCNPJParam := aLLTRIM(SuperGetMV("EZ_CNPJPAR" ,.F.,""))  // Dever� ser do tipo Caracter e possuir apenas o CNPJ da empresa principal
+
+	If !Empty(cCNPJParam)
+		cCNPJ := cCNPJParam
+	Else
+		cCNPJ := SM0->M0_CGC
+	Endif
+
+	cProduto := Padr(cProduto,30)
+
+	EZAbreTab(cTabela)
+
+	// Cria��o da tabela que trata a volumetria
+
+	dbSelectArea(cTabela)
+
+	If !(cTabela)->(dbSeek(cProduto+cCNPJ))
+
+		cResult := Ez4Connect(cCNPJ, cProduto)
+		EZ4AtuTab(cCNPJ,cProduto,cResult)
+
+	Else
+
+		While !(cTabela)->(Eof()) .And. cProduto == TABEZ4->PRODUTO  .AND. cCNPJ == TABEZ4->CNPJ
+			cResult += Alltrim((cTabela)->DADOS)
+			(cTabela)->(dbSkip())
+		Enddo
+
+		If Empty(cResult)
+			cResult := Ez4Connect(cCNPJ, cProduto)
+			if !EMPTY(cResult)
+				EZ4AtuTab(cCNPJ,cProduto,cResult)
+			else
+				msgRetorno := "Falha na conex�o com o Servidor de Licen�as. " + CRLF + "Por favor entrar em contato com a EZ4 Consultoria!"
+			ENDIF
+		Endif
+
+	Endif
+
+	If Empty(cResult)
+
+		msgRetorno := "Erro na Autentica��o!"+CRLF+"Favor entrar em contato com EZ4"
+		lRet := .F.
+
+	Else
+		cResult = rc4crypt(cResult, cKeyPadrao, .F., .T.)
+
+		If FWJsonDeserialize(cResult,@oObjRet)
+
+			dDTFImCtr := STOD(oObjRet:DATAFIMCONTRATO)
+			dDtProx   := STOD(StrTran(oObjRet:DATAPROXIMAVALIDACAO,"/",""))
+			cKeyEz4   := oObjRet:CODBLOCK
+
+			If (ddatabase > dDTFImCtr) .Or.  dDatabase > dDtProx // OK
+				cResult := Ez4Connect(cCNPJ, cProduto)
+				EZ4AtuTab(cCNPJ,cProduto,cResult)
+				cResult = rc4crypt(cResult, cKeyPadrao, .F., .T.)
+				If FWJsonDeserialize(cResult,@oObjRet)
+					dDTFImCtr := STOD(oObjRet:DATAFIMCONTRATO)
+					dDtProx   := STOD(StrTran(oObjRet:DATAPROXIMAVALIDACAO,"/",""))
+					cKeyEz4   := oObjRet:CODBLOCK
+				Endif
+			Endif
+
+			If (ddatabase > dDTFImCtr)
+
+				msgRetorno := "Produto com contrato para CNPJ " + oObjRet:CNPJ +" vencido em " + DTOC(dDTFImCtr) + CRLF + "Por favor entrar em contato com a EZ4 Consultoria!"
+				lRet := .F.
+
+			ElseIf dDatabase > dDtProx
+
+				If !Empty(oObjRet:CHAVE)
+
+					If oObjRet:STATUS == '1'
+						EZ4AtuTab(cCNPJ,cProduto,cResult)
+					Else
+						msgRetorno := "Produto com bloqueio Financeiro"+CRLF+"Entre em contato com a EZ4 Consultoria"
+						lRet := .F.
+					Endif
+
+				Else
+
+					msgRetorno := "Produto Sem Licen�a, Para contratar entre em contato com a EZ4 Consultoria"
+					lRet := .F.
+
+				Endif
+
+			Endif
+
+		Endif
+
+	Endif
+
+Return lRet
+
+
+
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZCLIENT.prw
+===============================================================================================
+||   Funcao: 	EZAbreTab
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	10/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static  Function EZAbreTab(cTabela) // Cria/abre as tabelas
+
+	Local aStru := {}
+
+	aStru := {  { "PRODUTO" , "C" , 30 , 0 },;
+		{ "CNPJ"    , "C" , 14 , 0 },;
+		{ "SEQ"     , "N" , 10 , 0 },;
+		{ "DADOS"   , "C" , 900 , 0 }}
+
+	cTabela := upper(AllTrim(cTabela))
+
+	If Select(cTabela) == 0
+
+		If !MsFile(cTabela,,"TOPCONN")
+			dbCreate(cTabela, aStru, "TOPCONN")
+			dbUseArea(.T.,"TOPCONN",cTabela,cTabela,.F.)
+			(cTabela)->(dbCreateIndex( cTabela+'1' , "PRODUTO+CNPJ+SEQ" , {||PRODUTO+CNPJ+SEQ}) )
+			(cTabela)->(dbCloseArea())
+		EndIf
+		dbUseArea(.T.,"TOPCONN",cTabela,cTabela,.T.)
+		(cTabela)->(DbSetIndex(cTabela+'1'))
+
+	EndIf
+
+Return
+
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZCLIENT.prw
+===============================================================================================
+||   Funcao: 	Ez4Connect
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	14/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static Function Ez4Connect(cCNPJ, cProduto)
+
+	Local oRest
+	Local oRestEnv
+	Local oObjRet
+	Local aHeader    := {}
+	//Local cURL     := "http://177.153.229.178:8097"
+	Local cURL       := "http://license.ez4.com.br:8097"
+	Local cPath      := "/rest/EZLICENCAPI"
+	Local cResult    := ""
+	Local oJson
+
+	Local cIPSRVINT := Alltrim(SuperGetMV("EZ_IPSRVIN" ,.F.,""))
+	//10.127.248.5
+	If !Empty(cIPSRVINT)
+		cURL := "http://"+cIPSRVINT+":8097"
+	Endif
+
+	// Inclui Cabe�alho
+	aAdd( aHeader , "Authorization: Basic bGVvbmFyZG8ubGltYToxMjM0NTY="  )
+	aAdd( aHeader , "Username: leonardo.lima"  )
+	aAdd( aHeader , "Password: 123456"  )
+
+	oRest := FWRest():New(cURL)
+	oRest:SetPath( cPath + "?token="+cCNPJ+"&produto="+cProduto)
+
+	If oRest:Get( aHeader )
+
+		cResult := oRest:cResult
+
+		cResult = rc4crypt(cResult, cKeyPadrao, .F., .T.)
+
+		If FWJsonDeserialize(cResult,@oObjRet)
+
+			oJson := JsonObject():new()
+			oJson["status"]               := oObjRet:STATUS
+			oJson['dataFimContrato']      := oObjRet:DATAFIMCONTRATO
+			oJson['dataProximaValidacao'] := oObjRet:DATAPROXIMAVALIDACAO
+			oJson['produto']              := oObjRet:PRODUTO
+			oJson['contrato']             := oObjRet:contrato
+			oJson['codBlock']             := oObjRet:codBlock
+			oJson['chave']                := If(!Empty(oObjRet:codBlock),&(oObjRet:codBlock),"")
+			oJson['cnpj']                 := oObjRet:CNPJ
+
+			cResult := oJson:toJSON()
+			cResult := rc4crypt(cResult, cKeyPadrao, .T., .F.)
+
+            /*
+            oRestEnv := FWRest():New(cURL)
+            oRestEnv:SetPath( cPath + "?token="+cResult)
+
+            If oRestEnv:Post( aHeader )
+
+                cResult := oRestEnv:cResult
+
+            Endif            
+            */
+
+		Endif
+
+	Endif
+
+Return cResult
+
+/*
+===============================================================================================
+===============================================================================================
+||   Arquivo:	EZCLIENT.prw
+===============================================================================================
+||   Funcao: 	EZ4AtuTab
+===============================================================================================
+||   Autor:	Marcio Martins Pereira
+||   Data:	14/12/2020
+===============================================================================================
+===============================================================================================
+*/
+Static Function EZ4AtuTab(cCNPJ,cProduto,cResult)
+
+	Local nLinhas    := 0
+	Local nPos       := 1
+	Local nX         := 0
+
+	dbSelectArea((cTabela))
+
+	If (cTabela)->(dbSeek(cProduto+cCNPJ))
+
+		While !(cTabela)->(Eof()) .And. cProduto+cCNPJ == (cTabela)->(PRODUTO+CNPJ)
+			RecLock((cTabela),.F.)
+			(cTabela)->(dbDelete())
+			MsUnlock()
+			(cTabela)->(dbSkip())
+		Enddo
+	Endif
+
+	nLinhas := Int(Len(cResult)/900)+1
+	For nX := 1 to nLinhas
+		RecLock((cTabela),.T.)
+		(cTabela)->PRODUTO  := cProduto
+		(cTabela)->CNPJ     := cCNPJ
+		(cTabela)->SEQ      := nX
+		(cTabela)->DADOS    := SubStr(cResult,nPos,900)
+		MsUnlock()
+		nPos+=900
+	Next
+
+Return
+
+	*===============================================*
+Static Function Decript(cString)
+	*===============================================*
+	Local cRet
+
+	cRet := PoliEncript(cString,"SourceSafe",1)
+	cRet := HexEncript(cRet,1)
+
+Return cRet
+
+	*===============================================*
+Static Function Encript(cString)
+	*===============================================*
+	Local cRet
+
+	cRet := PoliEncript(cString,"SolutionProvider",1)
+	cRet := HexEncript(cRet,1)
+
+Return cRet
